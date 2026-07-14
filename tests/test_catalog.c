@@ -37,6 +37,25 @@ int main(void)
     CHECK(strcmp(tasks[1].window_id, "msys.x11-window.v1:7:1") == 0);
     CHECK(strcmp(tasks[0].thumbnail, "/tmp/alpha.ppm") == 0);
     CHECK(strcmp(tasks[0].native_id, "0x2a") == 0);
+    CHECK(msys_native_parse_tasks(
+        "{\"windows\":["
+        "{\"component\":\"org.example:beta\",\"id\":\"beta-hidden\",\"title\":\"Beta stale\",\"state\":\"hidden\"},"
+        "{\"component\":\"org.example:alpha\",\"id\":\"alpha\",\"title\":\"Alpha\",\"state\":\"visible\"},"
+        "{\"component\":\"org.example:beta\",\"id\":\"beta\",\"title\":\"Beta\",\"state\":\"visible\"},"
+        "{\"component\":\"org.example:gamma\",\"id\":\"gamma\",\"title\":\"Gamma\",\"state\":\"minimized\"},"
+        "{\"id\":\"external\",\"title\":\"External\",\"state\":\"hidden\"},"
+        "{\"id\":\"external\",\"title\":\"External duplicate\",\"state\":\"hidden\"}"
+        "]}",
+        tasks,
+        MSYS_NATIVE_MAX_TASKS,
+        &count
+    ));
+    CHECK(count == 4u);
+    CHECK(strcmp(tasks[0].component, "org.example:alpha") == 0);
+    CHECK(strcmp(tasks[1].component, "org.example:beta") == 0);
+    CHECK(strcmp(tasks[1].window_id, "beta") == 0);
+    CHECK(strcmp(tasks[2].component, "org.example:gamma") == 0);
+    CHECK(strcmp(tasks[3].window_id, "external") == 0);
     CHECK(!msys_native_parse_apps("{\"apps\":{}}", apps, 1u, &count));
     CHECK(msys_native_json_escape("a\"b\\c\n", escaped, sizeof(escaped)));
     CHECK(strcmp(escaped, "a\\\"b\\\\c\\n") == 0);

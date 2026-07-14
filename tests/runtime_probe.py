@@ -284,12 +284,196 @@ def main() -> int:
         ):
             raise RuntimeError(f"recents did not retain real tasks: {recents}")
 
-        if os.environ.get("MSYS_PROBE_EXPECT_MOBILE") == "1":
+        # Exercise an authoritative multi-application inventory independently
+        # of presentation order.  A stale hidden window for Beta precedes its
+        # visible replacement to prove component de-duplication and
+        # visible/minimized ordering in the native catalog.
+        multi_snapshot = {
+            "schema": "msys.window-list.v1",
+            "windows": [
+                {
+                    "component": "org.example.beta:main",
+                    "id": "msys.x11-window.v1:200:stale",
+                    "title": "Beta stale",
+                    "kind": "application",
+                    "role": "application",
+                    "state": "hidden",
+                },
+                {
+                    "component": "org.example.alpha:main",
+                    "id": "msys.x11-window.v1:100:1",
+                    "title": "Alpha document",
+                    "kind": "application",
+                    "role": "application",
+                    "state": "visible",
+                    "thumbnail": str(thumbnail),
+                },
+                {
+                    "component": "org.example.beta:main",
+                    "id": "msys.x11-window.v1:200:1",
+                    "title": "Beta document",
+                    "kind": "application",
+                    "role": "application",
+                    "state": "visible",
+                },
+                {
+                    "component": "org.example.gamma:main",
+                    "id": "msys.x11-window.v1:300:1",
+                    "title": "Gamma document",
+                    "kind": "application",
+                    "role": "application",
+                    "state": "minimized",
+                },
+            ],
+        }
+        after_beta_close = {
+            "schema": "msys.window-list.v1",
+            "windows": [multi_snapshot["windows"][1], multi_snapshot["windows"][3]],
+        }
+        alpha_only = {
+            "schema": "msys.window-list.v1",
+            "windows": [multi_snapshot["windows"][1]],
+        }
+
+        send(parent, {"type": "call", "id": 60, "method": "refresh_recents", "payload": {}})
+        multi_request = wait_for(
+            parent, outbound_call("role:window-manager", "list_windows")
+        )
+        wait_for(parent, packet_type("return", 60))
+        reply(parent, multi_request, multi_snapshot)
+        send(parent, {"type": "call", "id": 61, "method": "list_recents", "payload": {}})
+        multi = wait_for(parent, packet_type("return", 61))
+        multi_tasks = multi.get("payload", {}).get("tasks", [])
+        if [item.get("component") for item in multi_tasks] != [
+            "org.example.alpha:main",
+            "org.example.beta:main",
+            "org.example.gamma:main",
+        ]:
+            raise RuntimeError(f"multi-task sort/de-duplication failed: {multi}")
+        if multi_tasks[1].get("id") != "msys.x11-window.v1:200:1":
+            raise RuntimeError(f"visible duplicate was not retained: {multi}")
+
+        if os.environ.get("MSYS_PROBE_INPUT_MODE", "").strip():
+            width, height = window_geometry("MSYS Recents")
+            debug_input(
+                "--debug-swipe-identity",
+                "org.msys.shell.task-switcher",
+                str(width // 2),
+                str(max(40, height - 36)),
+                str(width // 2),
+                "72",
+                "260",
+            )
+            if not window_is_viewable("MSYS Recents"):
+                raise RuntimeError("multi-task scroll dismissed Overview")
+
+        # Close the middle card by its stable component.  The stop reply is
+        # followed by a fresh window inventory and a two-card reflow.
+        send(parent, {
+            "type": "call",
+            "id": 62,
+            "method": "close_task",
+            "payload": {"component": "org.example.beta:main"},
+        })
+        beta_stop = wait_for(parent, outbound_call("msys.core", "stop"))
+        wait_for(parent, packet_type("return", 62))
+        if beta_stop.get("payload") != {"component": "org.example.beta:main"}:
+            raise RuntimeError(f"middle task stop targeted the wrong component: {beta_stop}")
+        reply(parent, beta_stop, {
+            "component": "org.example.beta:main",
+            "state": "stopped",
+        })
+        beta_refresh = wait_for(
+            parent, outbound_call("role:window-manager", "list_windows")
+        )
+        reply(parent, beta_refresh, after_beta_close)
+        send(parent, {"type": "call", "id": 63, "method": "list_recents", "payload": {}})
+        after_close = wait_for(parent, packet_type("return", 63))
+        if [item.get("component") for item in after_close.get("payload", {}).get("tasks", [])] != [
+            "org.example.alpha:main",
+            "org.example.gamma:main",
+        ]:
+            raise RuntimeError(f"middle close did not reflow authoritative tasks: {after_close}")
+
+        # Reactivate Gamma from its reordered card inventory.
+        send(parent, {
+            "type": "call",
+            "id": 64,
+            "method": "activate_task",
+            "payload": {"component": "org.example.gamma:main"},
+        })
+        gamma_start = wait_for(parent, outbound_call("msys.core", "start"))
+        wait_for(parent, packet_type("return", 64))
+        if gamma_start.get("payload") != {"component": "org.example.gamma:main"}:
+            raise RuntimeError(f"reordered task activation targeted the wrong component: {gamma_start}")
+        reply(parent, gamma_start, {
+            "component": "org.example.gamma:main",
+            "state": "ready",
+            "activation": {"ok": True},
+        })
+        if window_is_viewable("MSYS Recents"):
+            raise RuntimeError("successful task activation left Overview visible")
+
+        # Reopen, then emulate an abnormal managed-task exit.  A terminal
+        # lifecycle event must trigger one coalesced inventory refresh while
+        # keeping Overview available with the surviving task.
+        send(parent, {"type": "call", "id": 65, "method": "show", "payload": {}})
+        abnormal_open = wait_for(
+            parent, outbound_call("role:window-manager", "list_windows")
+        )
+        wait_for(parent, packet_type("return", 65))
+        reply(parent, abnormal_open, after_beta_close)
+        if not wait_window_viewable("MSYS Recents"):
+            raise RuntimeError("Overview did not reopen before abnormal-exit refresh")
+        failed_event = {
+            "type": "event",
+            "topic": "msys.lifecycle.transition",
+            "payload": {
+                "phase": "failed",
+                "component": "org.example.gamma:main",
+                "generation": 8,
+            },
+        }
+        send(parent, failed_event)
+        abnormal_refresh = wait_for(
+            parent, outbound_call("role:window-manager", "list_windows")
+        )
+        # A duplicate terminal event while the first inventory request is in
+        # flight becomes one bounded follow-up rather than parallel readers.
+        send(parent, failed_event)
+        reply(parent, abnormal_refresh, alpha_only)
+        coalesced_refresh = wait_for(
+            parent, outbound_call("role:window-manager", "list_windows")
+        )
+        reply(parent, coalesced_refresh, alpha_only)
+        send(parent, {"type": "call", "id": 66, "method": "list_recents", "payload": {}})
+        after_failure = wait_for(parent, packet_type("return", 66))
+        if [item.get("component") for item in after_failure.get("payload", {}).get("tasks", [])] != [
+            "org.example.alpha:main"
+        ]:
+            raise RuntimeError(f"abnormal task exit left a stale card: {after_failure}")
+
+        # Restore the two-task fixture used by the navigation and close-hit
+        # probes below.
+        send(parent, {"type": "call", "id": 67, "method": "refresh_recents", "payload": {}})
+        restore_catalog = wait_for(
+            parent, outbound_call("role:window-manager", "list_windows")
+        )
+        wait_for(parent, packet_type("return", 67))
+        reply(parent, restore_catalog, window_snapshot)
+        send(parent, {"type": "call", "id": 68, "method": "list_recents", "payload": {}})
+        restored = wait_for(parent, packet_type("return", 68))
+        if len(restored.get("payload", {}).get("tasks", [])) != 2:
+            raise RuntimeError(f"navigation fixture was not restored: {restored}")
+
+        expected_mobile = os.environ.get("MSYS_PROBE_EXPECT_MOBILE", "")
+        if expected_mobile in {"1", "portrait", "landscape"}:
+            landscape = expected_mobile == "landscape"
             expected_frames = {
-                "MSYS Chrome": (0, 0, 320, 42),
-                "MSYS Launcher": (0, 42, 320, 396),
-                "MSYS Recents": (0, 42, 320, 396),
-                "MSYS Navigation": (0, 438, 320, 42),
+                "MSYS Chrome": (0, 0, 438, 42) if landscape else (0, 0, 320, 42),
+                "MSYS Launcher": (0, 42, 438, 278) if landscape else (0, 42, 320, 396),
+                "MSYS Recents": (0, 42, 438, 278) if landscape else (0, 42, 320, 396),
+                "MSYS Navigation": (438, 42, 42, 278) if landscape else (0, 438, 320, 42),
             }
             for title, expected in expected_frames.items():
                 actual = window_frame(title)
@@ -322,23 +506,24 @@ def main() -> int:
         if input_mode:
             chrome_width, chrome_height = window_geometry("MSYS Chrome")
             nav_width, nav_height = window_geometry("MSYS Navigation")
+            nav_vertical = nav_height > nav_width * 2
 
             # Back dismisses the local Overview before it reaches an app.
             if input_mode == "buttons":
                 debug_input(
                     "--debug-click-identity",
                     "org.msys.shell.native.navigation-pill",
-                    str(nav_width // 6),
-                    str(nav_height // 2),
+                    str(nav_width // 2 if nav_vertical else nav_width // 6),
+                    str(nav_height // 6 if nav_vertical else nav_height // 2),
                 )
             elif input_mode == "pill":
                 debug_input(
                     "--debug-swipe-identity",
                     "org.msys.shell.native.navigation-pill",
-                    str(nav_width // 2),
-                    str(nav_height - 6),
-                    str(nav_width // 2),
-                    str(nav_height - 18),
+                    str(nav_width - 6 if nav_vertical else nav_width // 2),
+                    str(nav_height // 2 if nav_vertical else nav_height - 6),
+                    str(nav_width - 18 if nav_vertical else nav_width // 2),
+                    str(nav_height // 2 if nav_vertical else nav_height - 18),
                     "180",
                 )
             else:
@@ -440,17 +625,17 @@ def main() -> int:
                 debug_input(
                     "--debug-click-identity",
                     "org.msys.shell.native.navigation-pill",
-                    str(nav_width * 5 // 6),
-                    str(nav_height // 2),
+                    str(nav_width // 2 if nav_vertical else nav_width * 5 // 6),
+                    str(nav_height * 5 // 6 if nav_vertical else nav_height // 2),
                 )
             else:
                 debug_input(
                     "--debug-swipe-identity",
                     "org.msys.shell.native.navigation-pill",
-                    str(nav_width // 2),
-                    str(nav_height - 6),
-                    str(nav_width // 2),
-                    "2",
+                    str(nav_width - 6 if nav_vertical else nav_width // 2),
+                    str(nav_height // 2 if nav_vertical else nav_height - 6),
+                    "2" if nav_vertical else str(nav_width // 2),
+                    str(nav_height // 2 if nav_vertical else 2),
                     "520",
                 )
             navigation_request = wait_for(
@@ -477,17 +662,17 @@ def main() -> int:
                 debug_input(
                     "--debug-click-identity",
                     "org.msys.shell.native.navigation-pill",
-                    str(nav_width * 5 // 6),
-                    str(nav_height // 2),
+                    str(nav_width // 2 if nav_vertical else nav_width * 5 // 6),
+                    str(nav_height * 5 // 6 if nav_vertical else nav_height // 2),
                 )
             elif input_mode == "pill":
                 debug_input(
                     "--debug-swipe-identity",
                     "org.msys.shell.native.navigation-pill",
-                    str(nav_width // 2),
-                    str(nav_height - 6),
-                    str(nav_width // 2),
-                    "2",
+                    str(nav_width - 6 if nav_vertical else nav_width // 2),
+                    str(nav_height // 2 if nav_vertical else nav_height - 6),
+                    "2" if nav_vertical else str(nav_width // 2),
+                    str(nav_height // 2 if nav_vertical else 2),
                     "520",
                 )
             else:
@@ -526,11 +711,12 @@ def main() -> int:
             close_ready = wait_for(parent, packet_type("return", 50))
             if len(close_ready.get("payload", {}).get("tasks", [])) != 2:
                 raise RuntimeError(f"task cards were not ready to close: {close_ready}")
+            recents_width, recents_height = window_geometry("MSYS Recents")
             debug_input(
                 "--debug-click-identity",
                 "org.msys.shell.task-switcher",
-                "280",
-                "240",
+                str(recents_width - 28),
+                str(min(240, recents_height - 24)),
             )
         else:
             send(parent, {
@@ -656,6 +842,10 @@ def main() -> int:
             "apps": listed_apps,
             "started": start_request.get("payload"),
             "tasks": tasks,
+            "multi_tasks": multi_tasks,
+            "after_middle_close": after_close.get("payload", {}).get("tasks", []),
+            "after_abnormal_exit": after_failure.get("payload", {}).get("tasks", []),
+            "orientation": os.environ.get("MSYS_PROBE_EXPECT_MOBILE", ""),
             "restored": restore_request.get("payload"),
             "closed": stop_request.get("payload"),
             "rss_kib": measured,

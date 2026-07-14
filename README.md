@@ -1,6 +1,6 @@
 # MSYS Native Shell
 
-Current source version: `0.3.4`.
+Current source version: `0.3.5`.
 
 This is a lean adaptive X11 shell, implemented as one C process using Xlib
 and the dependency-free JSON mIPC C SDK. This repository supplies the shell
@@ -52,6 +52,14 @@ window-list reply, error, or timeout, leaving the foreground application clear
 for a real cold-start thumbnail capture. A second Apps action can cancel that
 pending presentation, and a late reply does not remap it. Timeouts and late
 replies are bounded and safe.
+
+The top-to-bottom X11 inventory is de-duplicated by managed component (or
+stable window ID for external windows). Visible tasks precede minimized and
+hidden tasks while window-manager order remains stable inside each state. A
+terminal `closed`/`failed` lifecycle event refreshes a visible Overview through
+one coalesced request. Closing a card follows the same path, clamps the scroll
+offset after reflow, and damages only the task viewport rather than the system
+bars.
 
 `get_preferences` and its `status` alias return the versioned launcher
 preference state. `set_preferences` strictly merges one or more bounded fields,

@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.shell.native",
     "name": "MSYS Native Shell",
-      "version": "0.3.4",
+    "version": "0.3.5",
     "kind": "system",
     "vendor": "MSYS",
     "summary": "Lean adaptive Xlib shell with app icons and task previews",
@@ -72,6 +72,7 @@
         "mipc.event:subscribe:msys.role.navigation-bar",
         "mipc.event:subscribe:msys.role.system-chrome",
         "mipc.event:subscribe:msys.install.package_changed",
+        "mipc.event:subscribe:msys.lifecycle.transition",
         "mipc.event:publish:msys.shell.preferences.changed",
         "mipc.event:publish:msys.role.ready"
       ],

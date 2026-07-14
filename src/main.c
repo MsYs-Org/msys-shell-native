@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.4"
+#define APP_VERSION "0.3.5"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define TOAST_VISIBLE_MS 2600u
@@ -225,6 +225,7 @@ typedef struct native_shell {
     enum catalog_state tasks_state;
     char tasks_message[192];
     int apps_refresh_queued;
+    int tasks_refresh_queued;
     enum msys_native_shell_profile profile;
     int launcher_scroll;
     int launcher_drag_start_y;
@@ -275,6 +276,11 @@ static void draw_launcher(native_shell *shell);
 static void draw_navigation_action_damage(
     native_shell *shell,
     enum msys_native_navigation_action action
+);
+static void redraw_recents_viewport(
+    native_shell *shell,
+    const XWindowAttributes *attributes,
+    const msys_native_recents_layout *layout
 );
 static const char *tr(native_shell *shell, const char *key);
 
@@ -2219,6 +2225,7 @@ static int initialize_ipc(native_shell *shell)
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.role.navigation-bar");
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.role.system-chrome");
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.install.package_changed");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.lifecycle.transition");
     result = msys_mipc_send_ready(&shell->ipc);
     if (result != MSYS_MIPC_OK) {
         return 0;
@@ -2287,6 +2294,7 @@ static void hide_recents(native_shell *shell, int restore_task)
     shell->recents_pulse = -1;
     shell->recents_pulse_until_ms = 0u;
     shell->recents_close_pressed = 0;
+    shell->tasks_refresh_queued = 0;
     XUnmapWindow(shell->display, shell->recents);
     image_caches_dispose(shell->task_previews, MSYS_NATIVE_MAX_TASKS);
     if (
@@ -2312,6 +2320,22 @@ static void present_recents(native_shell *shell)
     }
     raise_system_bars(shell);
     draw_recents(shell);
+}
+
+static void refresh_recents_presentation(native_shell *shell)
+{
+    XWindowAttributes attributes;
+    msys_native_recents_layout layout;
+
+    if (
+        shell->recents_visible != 0 && shell->recents_mapped != 0 &&
+        XGetWindowAttributes(shell->display, shell->recents, &attributes)
+    ) {
+        recents_layout(shell, attributes.width, attributes.height, &layout);
+        redraw_recents_viewport(shell, &attributes, &layout);
+        return;
+    }
+    present_recents(shell);
 }
 
 static void show_recents(native_shell *shell)
@@ -2457,6 +2481,7 @@ static void request_apps(native_shell *shell)
 static void request_recents(native_shell *shell)
 {
     if (pending_has_kind(shell, PENDING_RECENTS_LIST) != 0) {
+        shell->tasks_refresh_queued = 1;
         return;
     }
     if (shell->tasks_state != CATALOG_READY && shell->tasks_state != CATALOG_EMPTY) {
@@ -3259,7 +3284,11 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
             shell->tasks_state = CATALOG_ERROR;
             shell->task_count = 0u;
             packet_error_text(packet, shell->tasks_message, sizeof(shell->tasks_message));
-            present_recents(shell);
+            refresh_recents_presentation(shell);
+            if (shell->tasks_refresh_queued != 0) {
+                shell->tasks_refresh_queued = 0;
+                request_recents(shell);
+            }
         } else if (pending.kind == PENDING_APP_START) {
             packet_error_text(packet, shell->apps_message, sizeof(shell->apps_message));
             show_toast(shell, shell->apps_message);
@@ -3343,7 +3372,11 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
         shell->recents_pressed = -1;
         shell->recents_pulse = -1;
         shell->recents_pulse_until_ms = 0u;
-        present_recents(shell);
+        refresh_recents_presentation(shell);
+        if (shell->tasks_refresh_queued != 0) {
+            shell->tasks_refresh_queued = 0;
+            request_recents(shell);
+        }
         break;
     case PENDING_TASK_ACTIVATE:
         if (payload_is_false(payload, "ok") != 0 || payload_has_field(payload, "activation_error") != 0) {
@@ -3406,6 +3439,33 @@ static void handle_event(native_shell *shell, const char *packet)
         } else {
             request_apps(shell);
         }
+    } else if (strcmp(topic, "msys.lifecycle.transition") == 0) {
+        char phase[32];
+        char component[MSYS_NATIVE_COMPONENT_CAPACITY];
+        size_t index;
+        int tracked = 0;
+
+        if (
+            shell->recents_visible == 0 ||
+            packet_payload(packet, payload, sizeof(payload)) == 0 ||
+            msys_mipc_json_get_string(
+                payload, "phase", phase, sizeof(phase), NULL
+            ) != MSYS_MIPC_OK ||
+            (strcmp(phase, "closed") != 0 && strcmp(phase, "failed") != 0) ||
+            msys_mipc_json_get_string(
+                payload, "component", component, sizeof(component), NULL
+            ) != MSYS_MIPC_OK
+        ) {
+            return;
+        }
+        for (index = 0u; index < shell->task_count; index++) {
+            if (strcmp(shell->tasks[index].component, component) == 0) {
+                tracked = 1;
+                break;
+            }
+        }
+        if (tracked != 0)
+            request_recents(shell);
     }
 }
 
@@ -4283,8 +4343,12 @@ static void periodic(native_shell *shell)
             }
             (void)snprintf(shell->tasks_message, sizeof(shell->tasks_message), "%s", tr(shell, "error.request_timeout"));
             if (expired.kind == PENDING_RECENTS_LIST) {
-                present_recents(shell);
+                refresh_recents_presentation(shell);
                 if (shell->recents_visible != 0) visual_change = 1;
+                if (shell->tasks_refresh_queued != 0) {
+                    shell->tasks_refresh_queued = 0;
+                    request_recents(shell);
+                }
             } else if (shell->recents_mapped != 0) {
                 draw_recents(shell);
                 visual_change = 1;

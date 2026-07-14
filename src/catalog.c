@@ -221,8 +221,7 @@ int msys_native_parse_apps(
         memset(&item, 0, sizeof(item));
         next = next_object(array, array_length, &offset, &raw, &raw_length);
         if (next == 0) {
-            *count = used;
-            return 1;
+            break;
         }
         if (next < 0) {
             return 0;
@@ -270,6 +269,15 @@ int msys_native_parse_apps(
     return 1;
 }
 
+static int task_state_rank(const msys_native_task *task)
+{
+    if (strcmp(task->state, "visible") == 0)
+        return 0;
+    if (strcmp(task->state, "minimized") == 0)
+        return 1;
+    return 2;
+}
+
 int msys_native_parse_tasks(
     const char *payload,
     msys_native_task *items,
@@ -282,6 +290,7 @@ int msys_native_parse_tasks(
     size_t offset = 0u;
     size_t used = 0u;
     int next;
+
     if (payload == NULL || items == NULL || count == NULL) {
         return 0;
     }
@@ -299,8 +308,7 @@ int msys_native_parse_tasks(
         memset(&item, 0, sizeof(item));
         next = next_object(array, array_length, &offset, &raw, &raw_length);
         if (next == 0) {
-            *count = used;
-            return 1;
+            break;
         }
         if (next < 0) {
             return 0;
@@ -350,7 +358,54 @@ int msys_native_parse_tasks(
                 item.component[0] != '\0' ? item.component : item.window_id
             );
         }
+        {
+            size_t duplicate = used;
+            size_t position;
+
+            for (position = 0u; position < used; position++) {
+                int same_component = item.component[0] != '\0' &&
+                    strcmp(items[position].component, item.component) == 0;
+                int same_external = item.component[0] == '\0' &&
+                    items[position].component[0] == '\0' &&
+                    strcmp(items[position].window_id, item.window_id) == 0;
+
+                if (same_component || same_external) {
+                    duplicate = position;
+                    break;
+                }
+            }
+            if (duplicate < used) {
+                if (task_state_rank(&item) < task_state_rank(&items[duplicate])) {
+                    size_t position;
+
+                    /* The better replacement appears at its own place in the
+                     * authoritative stack, not at the stale duplicate's old
+                     * position. */
+                    for (position = duplicate; position + 1u < used; position++)
+                        items[position] = items[position + 1u];
+                    items[used - 1u] = item;
+                }
+                continue;
+            }
+        }
         items[used++] = item;
+    }
+    {
+        size_t position;
+
+        /* Stable insertion sort: visible, minimized, hidden.  Equal-ranked
+         * tasks retain the authoritative X11 top-to-bottom ordering. */
+        for (position = 1u; position < used; position++) {
+            msys_native_task item = items[position];
+            size_t insertion = position;
+
+            while (insertion > 0u &&
+                    task_state_rank(&item) < task_state_rank(&items[insertion - 1u])) {
+                items[insertion] = items[insertion - 1u];
+                insertion--;
+            }
+            items[insertion] = item;
+        }
     }
     *count = used;
     return 1;
