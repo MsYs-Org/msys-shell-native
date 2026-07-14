@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+import json
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class NativeShellManifestTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.document = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+        cls.component = cls.document["components"][0]
+
+    def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
+        self.assertEqual(self.document["package"]["version"], "0.3.4")
+        implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
+        self.assertIn('#define APP_VERSION "0.3.4"', implementation)
+        self.assertEqual(len(self.document["components"]), 1)
+        self.assertEqual(self.component["runtime"], "native")
+        self.assertEqual(self.component["lifecycle"], "background")
+        self.assertNotIn("MSYS_NATIVE_NAV_MODE", self.component.get("env", {}))
+        self.assertEqual(self.component["readiness"]["mode"], "mipc-ready")
+        roles = {
+            item["role"]: item["priority"]
+            for item in self.component["provides"]
+        }
+        self.assertEqual(
+            roles,
+            {
+                "launcher": 90,
+                "system-chrome": 90,
+                "navigation-bar": 90,
+                "task-switcher": 90,
+                "notification-presenter": 90,
+            },
+        )
+        self.assertTrue(all(item["exclusive"] for item in self.component["provides"]))
+
+    def test_phase_two_role_boundary_does_not_claim_missing_contracts(self) -> None:
+        source = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("authoritative Core application inventory", source)
+        self.assertNotIn("placeholder", source.lower())
+        roles = {
+            item["role"] for item in self.component["provides"]
+        }
+        self.assertNotIn("notification-center", roles)
+        self.assertNotIn("transition-presenter", roles)
+        self.assertNotIn("chooser", roles)
+        claims = {
+            provide["role"]: provide.get("x-msys-contract")
+            for provide in self.component["provides"]
+        }
+        self.assertEqual(
+            claims["launcher"],
+            {"id": "org.msys.role.launcher.v1", "version": "1.0.0"},
+        )
+        self.assertEqual(
+            claims["navigation-bar"],
+            {"id": "org.msys.role.navigation-bar.v1", "version": "1.0.0"},
+        )
+        self.assertIsNone(claims["task-switcher"])
+        self.assertIsNone(claims["notification-presenter"])
+
+    def test_manifest_paths_i18n_and_acl_are_explicit(self) -> None:
+        self.assertEqual(self.component["exec"], ["@package/bin/msys-shell-native"])
+        self.assertEqual(self.component["windowing"]["title"], "MSYS Launcher")
+        self.assertEqual(
+            self.component["windowing"]["identity"],
+            {
+                "app_id": "org.msys.shell.native.launcher",
+                "x11_wm_class": "org.msys.shell.native.launcher",
+                "x11_wm_instance": "msys-shell-native",
+            },
+        )
+        role_windows = self.component["x-msys-role-windows"]
+        self.assertEqual(set(role_windows), {"launcher", "navigation-bar"})
+        self.assertEqual(role_windows["launcher"], self.component["windowing"])
+        self.assertEqual(role_windows["navigation-bar"]["mode"], "overlay")
+        self.assertEqual(role_windows["navigation-bar"]["edge"], "bottom")
+        metadata = self.document["package"]["x-msys-i18n"]
+        catalog = json.loads((ROOT / metadata["catalog"]).read_text(encoding="utf-8"))
+        self.assertEqual(set(catalog["messages"]), {"en-US", "zh"})
+        self.assertEqual(
+            catalog["messages"]["zh"]["package.name"],
+            "MSYS 原生桌面",
+        )
+        self.assertEqual(
+            catalog["messages"]["zh"]["package.summary"],
+            "带实时应用与任务预览的轻量自适应 X11 桌面",
+        )
+        self.assertEqual(
+            catalog["messages"]["zh"]["warning.display_session_rebuilt"],
+            "显示连接异常，显示会话已重启；应用未自动重开",
+        )
+        permissions = set(self.component["permissions"])
+        self.assertIn("mipc.call:role:window-manager", permissions)
+        self.assertIn("mipc.call:role:notification-center", permissions)
+        self.assertIn("mipc.call:msys.core", permissions)
+        self.assertIn(
+            "mipc.event:subscribe:msys.install.package_changed",
+            permissions,
+        )
+        self.assertIn(
+            "mipc.event:subscribe:msys.display.output_recovered",
+            permissions,
+        )
+        self.assertIn("mipc.event:publish:msys.shell.preferences.changed", permissions)
+        banned = ("systemctl", "dbus", "apt-get", "pip install", "openbox")
+        implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8").lower()
+        self.assertIn("msys launcher", implementation)
+        self.assertIn("org.msys.shell.native.launcher", implementation)
+        self.assertIn("msys-shell-native", implementation)
+        self.assertIn('"msys.core"', implementation)
+        self.assertIn('"list_apps"', implementation)
+        self.assertIn('"role:window-manager"', implementation)
+        self.assertIn('"list_windows"', implementation)
+        self.assertIn("msys.install.package_changed", implementation)
+        self.assertIn("msys.display.output_recovered", implementation)
+        self.assertIn("msys.display-output-recovered.v1", implementation)
+        self.assertIn("applications_reopened", implementation)
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("src/catalog.c", makefile)
+        self.assertIn("src/image.c", makefile)
+        self.assertIn("generated/shell_catalog.h", makefile)
+        for token in banned:
+            self.assertNotIn(token, implementation)
+
+    def test_native_chrome_uses_actual_glyph_metrics_and_has_no_idle_flush(self) -> None:
+        implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
+        centered = implementation[
+            implementation.index("static void draw_text_centered"):
+            implementation.index("static void draw_text_ellipsized")
+        ]
+        self.assertIn("msys_native_center_baseline(surface_height, glyph_y, glyph_height)", centered)
+        self.assertIn("*glyph_y = -(int)extents.y;", implementation)
+        self.assertNotIn("surface_height / 2 + 7", centered)
+        periodic = implementation[
+            implementation.index("static void periodic"):
+            implementation.index("static int event_loop")
+        ]
+        self.assertIn("int visual_change = 0;", periodic)
+        self.assertIn(
+            "if (visual_change != 0) {\n        XFlush(shell->display);\n    }",
+            periodic,
+        )
+        event_loop = implementation[
+            implementation.index("static int event_loop"):
+            implementation.index("static void shutdown_shell")
+        ]
+        self.assertIn("queued_events = XEventsQueued(shell->display, QueuedAlready);", event_loop)
+        self.assertNotIn("handle_x_event(shell, &event);\n            XFlush", event_loop)
+
+    def test_antialiased_utf8_font_path_precedes_last_resort_core_font(self) -> None:
+        implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
+        lower = implementation.casefold()
+        self.assertIn('dlopen("libXft.so.2"', implementation)
+        self.assertIn('"XftDrawStringUtf8"', implementation)
+        self.assertIn('"XftDrawSetClip"', implementation)
+        self.assertIn('"XftDrawSetClipRectangles"', implementation)
+        self.assertIn('"Noto Sans CJK SC:style=Regular:lang=zh-cn', implementation)
+        self.assertIn('"Sans:lang=zh-cn', implementation)
+        self.assertIn("pixelsize=18", implementation)
+        self.assertIn("antialias=true", implementation)
+        self.assertIn("hinting=true", implementation)
+        self.assertIn("hintstyle=hintslight", implementation)
+        self.assertIn("autohint=false", implementation)
+        self.assertIn("embeddedbitmap=false", implementation)
+        self.assertIn("rgba=none", implementation)
+        self.assertNotIn(":size=14", implementation)
+        self.assertIn('getenv("MSYS_UI_FONT_FAMILY")', implementation)
+        self.assertIn("candidate.char_exists", implementation)
+        self.assertIn("Xutf8DrawString", implementation)
+        self.assertNotIn("msyscjk", lower)
+        self.assertNotIn(".bdf", lower)
+
+        clipped_text = implementation[
+            implementation.index("static void draw_text("):
+            implementation.index("static void draw_text_centered")
+        ]
+        self.assertIn("shell->clip_active != 0", clipped_text)
+        self.assertIn("draw_set_clip_rectangles", clipped_text)
+
+        fallback = implementation[
+            implementation.index("if (xft_initialize(shell) == 0)"):
+            implementation.index("shell->background = color")
+        ]
+        self.assertIn("XCreateFontSet", fallback)
+        self.assertIn('XLoadQueryFont(shell->display, "fixed")', fallback)
+        self.assertLess(
+            fallback.index("XCreateFontSet"),
+            fallback.index('XLoadQueryFont(shell->display, "fixed")'),
+        )
+
+    def test_adaptive_overview_icons_and_damage_paths_are_native(self) -> None:
+        implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
+        self.assertIn('strftime(clock_text, sizeof(clock_text), "%H:%M:%S"', implementation)
+        self.assertIn("draw_chrome_clock_damage", implementation)
+        self.assertIn("msys_native_recents_compute", implementation)
+        self.assertIn("redraw_launcher_viewport", implementation)
+        self.assertIn("redraw_recents_viewport", implementation)
+        self.assertNotIn(
+            "attributes.width - right - 12,\n                    layout.top",
+            implementation,
+        )
+        self.assertIn('"_MSYS_WINDOW_ROLE"', implementation)
+        for role in (
+            '"launcher"',
+            '"system-chrome"',
+            '"navigation-bar"',
+            '"task-switcher"',
+            '"notification-presenter"',
+        ):
+            self.assertIn(role, implementation)
+        self.assertIn("draw_cached_image", implementation)
+        self.assertIn("static void draw_control_icon", implementation)
+        self.assertIn("XDrawArc(shell->display, drawable", implementation)
+        show_recents = implementation[
+            implementation.index("static void show_recents"):
+            implementation.index("static void show_controls")
+        ]
+        self.assertLess(
+            show_recents.index("request_recents(shell)"),
+            show_recents.index("present_recents(shell)"),
+        )
+        self.assertNotIn("XMapRaised", show_recents)
+        self.assertIn("recents_mapped", implementation)
+        self.assertIn("role:notification-center", implementation)
+        self.assertIn("org.msys.settings:main", implementation)
+        self.assertIn("event->xexpose.width", implementation)
+        self.assertIn("XCheckTypedWindowEvent", implementation)
+        self.assertIn("surface_size_changed", implementation)
+        self.assertIn("NAV_INTERACTION_MAX_MS", implementation)
+        self.assertIn("TRANSITION_PULSE_MS", implementation)
+        self.assertIn("static void pulse_recents_card", implementation)
+        self.assertIn("static void hide_toast", implementation)
+        self.assertIn("must not keep an overlay mapped", implementation)
+        self.assertNotIn("chinese_locale", implementation)
+        generated = (ROOT / "generated" / "shell_catalog.h").read_text(encoding="utf-8")
+        self.assertIn("shell_catalog", generated)
+
+
+if __name__ == "__main__":
+    unittest.main()
