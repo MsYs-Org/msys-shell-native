@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.14"
+#define APP_VERSION "0.3.15"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8
@@ -5055,28 +5055,34 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         int top = 0;
         int right = 0;
         int bottom = 0;
-        int local_x = event->xbutton.x;
-        int local_y = event->xbutton.y;
+        int local_x = -1;
+        int local_y = -1;
+        int translated;
         int exit_released;
         int same_card = 0;
         int close_released = 0;
         size_t released_index = 0u;
         Window ignored = None;
-        if (event->xbutton.window != shell->recents) {
-            if (XTranslateCoordinates(
-                shell->display,
-                shell->root,
-                shell->recents,
-                event->xbutton.x_root,
-                event->xbutton.y_root,
-                &local_x,
-                &local_y,
-                &ignored
-            ) == 0) {
-                /* Translation failure is a cancelled release, never a click. */
-                local_x = -1;
-                local_y = -1;
-            }
+        /*
+         * Pointer grabs and release-only touch drivers can report the grabbed
+         * Recents window while leaving event-local x/y in another surface's
+         * coordinate space.  Root coordinates remain authoritative, so
+         * translate every release just as the physical navigation buttons do.
+         */
+        translated = XTranslateCoordinates(
+            shell->display,
+            shell->root,
+            shell->recents,
+            event->xbutton.x_root,
+            event->xbutton.y_root,
+            &local_x,
+            &local_y,
+            &ignored
+        );
+        if (translated == 0) {
+            /* Translation failure is a cancelled release, never a click. */
+            local_x = -1;
+            local_y = -1;
         }
         XUngrabPointer(shell->display, CurrentTime);
         if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) {

@@ -435,13 +435,17 @@ def debug_foreign_release_digest(
     release_title: str,
     release_x: int,
     release_y: int,
+    *,
+    event_local: tuple[int, int] | None = None,
+    capture_digest: bool = True,
 ) -> bytes:
     """Inject a release from another selected surface while Button1 is held.
 
     Real touch drivers and an X server grab race can report the terminal event
-    with a different ``event.window``.  XSendEvent makes that case deterministic
-    without weakening the production grab.  The returned digest is sampled
-    before the physical Button1 release, so stale pressed feedback is visible.
+    with a different ``event.window`` or stale event-local coordinates.
+    XSendEvent makes both cases deterministic without weakening the production
+    grab.  The optional digest is sampled before the physical Button1 release,
+    so stale pressed feedback is visible.
     """
 
     press_frame_x, press_frame_y, press_width, press_height = window_frame(
@@ -517,8 +521,8 @@ def debug_foreign_release_digest(
         event.xbutton.root = root
         event.xbutton.subwindow = 0
         event.xbutton.time = 0
-        event.xbutton.x = release_x
-        event.xbutton.y = release_y
+        event.xbutton.x = release_x if event_local is None else event_local[0]
+        event.xbutton.y = release_y if event_local is None else event_local[1]
         event.xbutton.x_root = release_frame_x + release_x
         event.xbutton.y_root = release_frame_y + release_y
         event.xbutton.state = 1 << 8  # Button1Mask
@@ -534,7 +538,7 @@ def debug_foreign_release_digest(
             raise RuntimeError("foreign release XSendEvent failed")
         x11.XSync(display, 0)
         time.sleep(0.08)
-        return window_pixel_digest(press_title)
+        return window_pixel_digest(press_title) if capture_digest else b""
     finally:
         if pressed:
             xtst.XTestFakeButtonEvent(display, 1, 0, 0)
@@ -1239,11 +1243,18 @@ def main() -> int:
             if not window_is_viewable("MSYS Recents"):
                 raise RuntimeError("Exit press released outside still hid Overview")
             assert_no_outbound_call(parent, "msys.core", "start")
-            debug_input(
-                "--debug-click-identity",
-                "org.msys.shell.task-switcher",
-                str(window_geometry("MSYS Recents")[0] - 30),
-                "30",
+            # A release-only touch grab can retain Recents as event.window but
+            # report stale local x/y.  The authoritative root coordinates must
+            # still activate Exit.
+            debug_foreign_release_digest(
+                "MSYS Recents",
+                exit_width - 30,
+                30,
+                "MSYS Recents",
+                exit_width - 30,
+                30,
+                event_local=(8, 220),
+                capture_digest=False,
             )
             restore_request = wait_for(parent, outbound_call("msys.core", "start"))
             reply(parent, restore_request, {

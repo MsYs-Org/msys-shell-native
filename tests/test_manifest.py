@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.14")
+        self.assertEqual(self.document["package"]["version"], "0.3.15")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.14"', implementation)
+        self.assertIn('#define APP_VERSION "0.3.15"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -293,10 +293,10 @@ class NativeShellManifestTests(unittest.TestCase):
                 "event->type == ButtonRelease && event->xbutton.window == shell->toast"
             )
         ]
-        self.assertIn("event->xbutton.window != shell->recents", recents_release)
         self.assertIn("XTranslateCoordinates", recents_release)
         self.assertIn("event->xbutton.x_root", recents_release)
         self.assertIn("event->xbutton.y_root", recents_release)
+        self.assertNotIn("event->xbutton.window != shell->recents", recents_release)
         self.assertNotIn("event->xbutton.x,\n            event->xbutton.y", recents_release)
         self.assertIn("XGrabPointer", launcher_press)
         self.assertIn("shell->launcher,\n            False", launcher_press)
