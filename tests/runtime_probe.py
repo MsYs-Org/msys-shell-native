@@ -16,6 +16,175 @@ from pathlib import Path
 from typing import Callable
 
 
+class XSetWindowAttributes(ctypes.Structure):
+    _fields_ = [
+        ("background_pixmap", ctypes.c_ulong),
+        ("background_pixel", ctypes.c_ulong),
+        ("border_pixmap", ctypes.c_ulong),
+        ("border_pixel", ctypes.c_ulong),
+        ("bit_gravity", ctypes.c_int),
+        ("win_gravity", ctypes.c_int),
+        ("backing_store", ctypes.c_int),
+        ("backing_planes", ctypes.c_ulong),
+        ("backing_pixel", ctypes.c_ulong),
+        ("save_under", ctypes.c_int),
+        ("event_mask", ctypes.c_long),
+        ("do_not_propagate_mask", ctypes.c_long),
+        ("override_redirect", ctypes.c_int),
+        ("colormap", ctypes.c_ulong),
+        ("cursor", ctypes.c_ulong),
+    ]
+
+
+class X11StackFixture:
+    """Own real X11 windows so Overview tests the server stack, not map state."""
+
+    def __init__(self) -> None:
+        self.x11 = ctypes.CDLL("libX11.so.6")
+        self.x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        self.x11.XOpenDisplay.restype = ctypes.c_void_p
+        self.x11.XDefaultScreen.argtypes = [ctypes.c_void_p]
+        self.x11.XDefaultScreen.restype = ctypes.c_int
+        self.x11.XRootWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.x11.XRootWindow.restype = ctypes.c_ulong
+        self.x11.XWhitePixel.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.x11.XWhitePixel.restype = ctypes.c_ulong
+        self.x11.XBlackPixel.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.x11.XBlackPixel.restype = ctypes.c_ulong
+        self.x11.XCreateSimpleWindow.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint,
+            ctypes.c_uint,
+            ctypes.c_uint,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+        ]
+        self.x11.XCreateSimpleWindow.restype = ctypes.c_ulong
+        self.x11.XStoreName.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_char_p,
+        ]
+        self.x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        self.x11.XInternAtom.restype = ctypes.c_ulong
+        self.x11.XChangeProperty.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.c_int,
+        ]
+        self.x11.XChangeWindowAttributes.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.POINTER(XSetWindowAttributes),
+        ]
+        self.x11.XMapRaised.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self.x11.XDestroyWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self.x11.XQueryTree.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
+            ctypes.POINTER(ctypes.c_uint),
+        ]
+        self.x11.XQueryTree.restype = ctypes.c_int
+        self.x11.XFree.argtypes = [ctypes.c_void_p]
+        self.x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        self.display = self.x11.XOpenDisplay(os.environ["DISPLAY"].encode("ascii"))
+        if not self.display:
+            raise RuntimeError("cannot open X display for stacking fixture")
+        self.screen = self.x11.XDefaultScreen(self.display)
+        self.root = self.x11.XRootWindow(self.display, self.screen)
+        self.windows: list[int] = []
+
+    def create(self, title: str, role: str, override_redirect: bool = False) -> int:
+        window = int(self.x11.XCreateSimpleWindow(
+            self.display,
+            self.root,
+            0,
+            42,
+            200,
+            160,
+            0,
+            self.x11.XBlackPixel(self.display, self.screen),
+            self.x11.XWhitePixel(self.display, self.screen),
+        ))
+        if window == 0:
+            raise RuntimeError(f"cannot create X11 fixture window {title}")
+        self.windows.append(window)
+        self.x11.XStoreName(self.display, window, title.encode("utf-8"))
+        for name, value in (
+            ("_MSYS_WINDOW_ROLE", role),
+            ("_MSYS_APP_ID", f"org.msys.probe.{role}"),
+            ("_MSYS_COMPONENT_ID", f"org.msys.probe.{role}:main"),
+        ):
+            atom = self.x11.XInternAtom(self.display, name.encode("ascii"), 0)
+            encoded = value.encode("utf-8")
+            data = (ctypes.c_ubyte * len(encoded)).from_buffer_copy(encoded)
+            self.x11.XChangeProperty(
+                self.display, window, atom, 31, 8, 0, data, len(encoded)
+            )
+        if override_redirect:
+            attributes = XSetWindowAttributes()
+            attributes.override_redirect = 1
+            self.x11.XChangeWindowAttributes(
+                self.display, window, 1 << 9, ctypes.byref(attributes)
+            )
+        self.x11.XMapRaised(self.display, window)
+        self.x11.XSync(self.display, 0)
+        return window
+
+    def stack(self) -> list[int]:
+        root_return = ctypes.c_ulong()
+        parent_return = ctypes.c_ulong()
+        children = ctypes.POINTER(ctypes.c_ulong)()
+        count = ctypes.c_uint()
+        if not self.x11.XQueryTree(
+            self.display,
+            self.root,
+            ctypes.byref(root_return),
+            ctypes.byref(parent_return),
+            ctypes.byref(children),
+            ctypes.byref(count),
+        ):
+            raise RuntimeError("XQueryTree failed")
+        try:
+            return [int(children[index]) for index in range(count.value)]
+        finally:
+            if children:
+                self.x11.XFree(ctypes.cast(children, ctypes.c_void_p))
+
+    def wait_above(self, upper: int, lower: int, timeout: float = 2) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            stack = self.stack()
+            if upper in stack and lower in stack and stack.index(upper) > stack.index(lower):
+                return True
+            time.sleep(0.02)
+        stack = self.stack()
+        return upper in stack and lower in stack and stack.index(upper) > stack.index(lower)
+
+    def close(self) -> None:
+        if not self.display:
+            return
+        for window in reversed(self.windows):
+            self.x11.XDestroyWindow(self.display, window)
+        self.x11.XSync(self.display, 0)
+        self.x11.XCloseDisplay(self.display)
+        self.display = None
+        self.windows.clear()
+
+
 def receive(channel: socket.socket) -> dict:
     raw = channel.recv(256 * 1024)
     if not raw:
@@ -146,6 +315,19 @@ def window_frame(title: str) -> tuple[int, int, int, int]:
     return values[0], values[1], values[2], values[3]
 
 
+def window_id(title: str) -> int:
+    result = subprocess.run(
+        ["xwininfo", "-display", os.environ["DISPLAY"], "-name", title],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    match = re.search(r"Window id:\s+(0x[0-9a-fA-F]+)", result.stdout)
+    if match is None:
+        raise RuntimeError(f"cannot read X11 id for {title}: {result.stdout}")
+    return int(match.group(1), 16)
+
+
 def assert_window_role(title: str, role: str, app_id: str) -> None:
     result = subprocess.run(
         [
@@ -206,6 +388,7 @@ def main() -> int:
     os.close(thumbnail_fd)
     thumbnail = Path(thumbnail_name)
     thumbnail.write_bytes(b"P6\n8 8\n255\n" + bytes((40, 100, 180)) * 64)
+    stack_fixture: X11StackFixture | None = None
     try:
         hello = receive(parent)
         if hello.get("type") != "hello":
@@ -282,6 +465,21 @@ def main() -> int:
             "activation": {"ok": True},
         })
 
+        # Keep a real managed application and override-redirect input method in
+        # the server tree.  A map-state-only assertion cannot detect Overview
+        # being viewable underneath either surface.
+        stack_fixture = X11StackFixture()
+        application_window = stack_fixture.create(
+            "MSYS Probe Application", "application"
+        )
+        input_method_window = stack_fixture.create(
+            "MSYS Probe Input Method", "input-method", override_redirect=True
+        )
+        if not wait_window_viewable("MSYS Probe Application"):
+            raise RuntimeError("stacking fixture application did not map")
+        if not wait_window_viewable("MSYS Probe Input Method"):
+            raise RuntimeError("stacking fixture input method did not map")
+
         send(parent, {"type": "call", "id": 43, "method": "show", "payload": {}})
         windows_request = wait_for(
             parent,
@@ -314,6 +512,23 @@ def main() -> int:
         reply(parent, windows_request, window_snapshot)
         if not wait_window_viewable("MSYS Recents"):
             raise RuntimeError("Overview did not map after window snapshots completed")
+        recents_window = window_id("MSYS Recents")
+        # A foreground application mapped after the asynchronous Overview
+        # presentation must still remain below task-switcher.  Map state alone
+        # cannot detect this inversion.
+        late_application_window = stack_fixture.create(
+            "MSYS Probe Late Application", "application"
+        )
+        if not wait_window_viewable("MSYS Probe Late Application"):
+            raise RuntimeError("late stacking fixture application did not map")
+        if not stack_fixture.wait_above(recents_window, application_window):
+            raise RuntimeError("Overview mapped underneath the foreground application")
+        if not stack_fixture.wait_above(recents_window, late_application_window):
+            raise RuntimeError("late application mapped above Overview")
+        if not stack_fixture.wait_above(recents_window, input_method_window):
+            raise RuntimeError("input method remained above Overview")
+        stack_fixture.close()
+        stack_fixture = None
         send(parent, {"type": "call", "id": 44, "method": "list_recents", "payload": {}})
         recents = wait_for(parent, packet_type("return", 44))
         tasks = recents.get("payload", {}).get("tasks", [])
@@ -969,6 +1184,8 @@ def main() -> int:
         }, ensure_ascii=False, indent=2))
         return 0 if process.returncode == 0 else 1
     finally:
+        if stack_fixture is not None:
+            stack_fixture.close()
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=5)
