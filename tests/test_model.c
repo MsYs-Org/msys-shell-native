@@ -27,6 +27,27 @@ static int test_gesture(void)
     CHECK(msys_native_button_action(319, 320) == MSYS_NATIVE_NAV_APPS);
     CHECK(msys_native_button_action_at(10, 200, 42, 480) == MSYS_NATIVE_NAV_HOME);
     CHECK(msys_native_button_action_at(200, 10, 480, 42) == MSYS_NATIVE_NAV_HOME);
+    CHECK(msys_native_button_release_action_at(
+        MSYS_NATIVE_NAV_BACK, 53, 42, 320, 42, 8
+    ) == MSYS_NATIVE_NAV_BACK);
+    CHECK(msys_native_button_release_action_at(
+        MSYS_NATIVE_NAV_BACK, 53, 43, 320, 42, 8
+    ) == MSYS_NATIVE_NAV_BACK);
+    CHECK(msys_native_button_release_action_at(
+        MSYS_NATIVE_NAV_BACK, -4, 21, 320, 42, 8
+    ) == MSYS_NATIVE_NAV_BACK);
+    CHECK(msys_native_button_release_action_at(
+        MSYS_NATIVE_NAV_BACK, 53, 50, 320, 42, 8
+    ) == MSYS_NATIVE_NAV_NONE);
+    CHECK(msys_native_button_release_action_at(
+        MSYS_NATIVE_NAV_BACK, 160, 21, 320, 42, 8
+    ) == MSYS_NATIVE_NAV_NONE);
+    CHECK(msys_native_button_release_action_at(
+        MSYS_NATIVE_NAV_BACK, 43, 79, 42, 480, 8
+    ) == MSYS_NATIVE_NAV_BACK);
+    CHECK(msys_native_button_release_action_at(
+        MSYS_NATIVE_NAV_BACK, 43, 240, 42, 480, 8
+    ) == MSYS_NATIVE_NAV_NONE);
     CHECK(msys_native_button_action(0, 0) == MSYS_NATIVE_NAV_NONE);
     CHECK(msys_native_navigation_slot_center(320, 0) == 53);
     CHECK(msys_native_navigation_slot_center(320, 1) == 160);

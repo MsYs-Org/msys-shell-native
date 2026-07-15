@@ -65,6 +65,32 @@ enum msys_native_navigation_action msys_native_button_action_at(
     return msys_native_button_action(x, width);
 }
 
+enum msys_native_navigation_action msys_native_button_release_action_at(
+    enum msys_native_navigation_action pressed,
+    int x,
+    int y,
+    int width,
+    int height,
+    int slop
+)
+{
+    enum msys_native_navigation_action released;
+    int bounded_x;
+    int bounded_y;
+    if (
+        pressed == MSYS_NATIVE_NAV_NONE || width <= 0 || height <= 0 || slop < 0 ||
+        x < -slop || y < -slop || x >= width + slop || y >= height + slop
+    ) {
+        return MSYS_NATIVE_NAV_NONE;
+    }
+    bounded_x = x < 0 ? 0 : (x >= width ? width - 1 : x);
+    bounded_y = y < 0 ? 0 : (y >= height ? height - 1 : y);
+    released = msys_native_button_action_at(
+        bounded_x, bounded_y, width, height
+    );
+    return released == pressed ? released : MSYS_NATIVE_NAV_NONE;
+}
+
 int msys_native_navigation_slot_center(int width, int slot)
 {
     int factor;

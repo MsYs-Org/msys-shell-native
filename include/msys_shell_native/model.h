@@ -105,6 +105,19 @@ enum msys_native_navigation_action msys_native_button_action_at(
 );
 
 /*
+ * Resolve a three-button release with a small tolerance outside the surface.
+ * The release must still resolve to the same slot that accepted the press.
+ */
+enum msys_native_navigation_action msys_native_button_release_action_at(
+    enum msys_native_navigation_action pressed,
+    int x,
+    int y,
+    int width,
+    int height,
+    int slop
+);
+
+/*
  * Return the horizontal centre of one of the three navigation slots.  Keeping
  * this independent of the X11 client geometry lets the shell follow a policy
  * manager which has resized the navigation surface after it was mapped.

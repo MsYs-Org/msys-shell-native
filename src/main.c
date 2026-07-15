@@ -26,9 +26,10 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.12"
+#define APP_VERSION "0.3.13"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
+#define NAV_BUTTON_RELEASE_SLOP 8
 #define TOAST_VISIBLE_MS 2600u
 #define EXIT_TOAST_VISIBLE_MS 1100u
 #define TOAST_ANIMATION_FRAME_MS 85u
@@ -4736,35 +4737,33 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         XWindowAttributes attributes;
         enum msys_native_navigation_action pressed = shell->button_pressed_action;
         enum msys_native_navigation_action released = MSYS_NATIVE_NAV_NONE;
-        int local_x = event->xbutton.x;
-        int local_y = event->xbutton.y;
+        int local_x = 0;
+        int local_y = 0;
+        int translated;
         Window ignored = None;
-        if (event->xbutton.window != shell->navigation) {
-            (void)XTranslateCoordinates(
-                shell->display,
-                shell->root,
-                shell->navigation,
-                event->xbutton.x_root,
-                event->xbutton.y_root,
-                &local_x,
-                &local_y,
-                &ignored
+        translated = XTranslateCoordinates(
+            shell->display,
+            shell->root,
+            shell->navigation,
+            event->xbutton.x_root,
+            event->xbutton.y_root,
+            &local_x,
+            &local_y,
+            &ignored
+        );
+        if (
+            translated != 0 &&
+            XGetWindowAttributes(shell->display, shell->navigation, &attributes)
+        ) {
+            released = msys_native_button_release_action_at(
+                pressed,
+                local_x,
+                local_y,
+                attributes.width,
+                attributes.height,
+                NAV_BUTTON_RELEASE_SLOP
             );
         }
-        if (XGetWindowAttributes(shell->display, shell->navigation, &attributes)) {
-            if (
-                local_x >= 0 && local_y >= 0 &&
-                local_x < attributes.width && local_y < attributes.height
-            ) {
-                released = msys_native_button_action_at(
-                    local_x,
-                    local_y,
-                    attributes.width,
-                    attributes.height
-                );
-            }
-        }
-        if (released != shell->button_pressed_action) released = MSYS_NATIVE_NAV_NONE;
         shell->button_pressed_action = MSYS_NATIVE_NAV_NONE;
         shell->nav_interaction_until_ms = 0u;
         XUngrabPointer(shell->display, CurrentTime);
