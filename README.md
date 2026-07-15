@@ -1,6 +1,13 @@
 # MSYS Native Shell
 
-Current source version: `0.3.17`.
+Current source version: `0.3.18`.
+
+Version 0.3.18 removes content-viewport painting from Launcher and Recents
+drag motion. Motion updates only the 12-pixel scroll-indicator strip; release
+atomically commits at most one final viewport. A clamped/no-scroll drag only
+clears its pressed cell or card once and performs no viewport redraw at all.
+The same bounded X11 presentation batch keeps the existing 112×42 per-second
+clock damage from exposing a clear-before-text intermediate frame.
 
 Version 0.3.17 adds a compact HAL-backed Wi-Fi strength icon immediately to
 the left of Quick Controls. It reacts to HAL change events, uses a bounded
@@ -90,9 +97,11 @@ name, renders at most four 90ms pulse frames, then remains static until Core
 reports ready/failure or the bounded request expires. It is not a replaceable
 `transition-presenter` role provider. `MSYS_NATIVE_REDUCED_MOTION=1` collapses
 finite shell animations to their first frame. Launcher and Overview drags are
-release-only for content: motion records the latest logical position without
-painting, and release damages the final viewport once, avoiding large SPI
-bounding boxes during touch movement.
+release-only for content: motion records the latest logical position and
+damages only the narrow scroll-indicator strip. Release atomically damages the
+final viewport at most once; a clamped drag performs no viewport damage. This
+avoids clear/content intermediate frames and repeated large SPI bounding boxes
+during touch movement without changing the CH347 dirty-box implementation.
 
 `get_preferences` and its `status` alias return the versioned launcher
 preference state. `set_preferences` strictly merges one or more bounded fields,
