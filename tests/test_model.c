@@ -57,6 +57,12 @@ static int test_gesture(void)
     CHECK(msys_native_center_baseline(24, -14, 18) == 17);
     CHECK(msys_native_center_baseline(42, -14, 18) == 26);
     CHECK(msys_native_center_baseline(0, 0, 0) == 0);
+    CHECK(msys_native_wifi_signal_level(0, 1, -40) == 0);
+    CHECK(msys_native_wifi_signal_level(1, 0, 0) == 1);
+    CHECK(msys_native_wifi_signal_level(1, 1, -71) == 1);
+    CHECK(msys_native_wifi_signal_level(1, 1, -70) == 2);
+    CHECK(msys_native_wifi_signal_level(1, 1, -56) == 2);
+    CHECK(msys_native_wifi_signal_level(1, 1, -55) == 3);
     return 0;
 }
 

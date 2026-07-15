@@ -497,6 +497,206 @@ int msys_native_apply_task_resources(
     return 1;
 }
 
+static int get_boolean(const char *object, const char *key, int *value)
+{
+    const char *raw = NULL;
+    size_t length = 0u;
+    if (
+        value == NULL ||
+        msys_mipc_json_get_raw(object, key, &raw, &length) != MSYS_MIPC_OK
+    ) return 0;
+    if (length == 4u && memcmp(raw, "true", 4u) == 0) {
+        *value = 1;
+        return 1;
+    }
+    if (length == 5u && memcmp(raw, "false", 5u) == 0) {
+        *value = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static int get_signal_dbm(const char *object, int *value)
+{
+    const char *raw = NULL;
+    size_t length = 0u;
+    size_t index = 0u;
+    int negative = 0;
+    int parsed = 0;
+    if (
+        value == NULL ||
+        msys_mipc_json_get_raw(
+            object, "signal_dbm", &raw, &length
+        ) != MSYS_MIPC_OK ||
+        length == 0u || length > 4u
+    ) return 0;
+    if (raw[0] == '-') {
+        negative = 1;
+        index = 1u;
+    }
+    if (index == length) return 0;
+    for (; index < length; index++) {
+        if (raw[index] < '0' || raw[index] > '9') return 0;
+        parsed = parsed * 10 + (raw[index] - '0');
+    }
+    parsed = negative != 0 ? -parsed : parsed;
+    if (parsed < -200 || parsed > 0) return 0;
+    *value = parsed;
+    return 1;
+}
+
+int msys_native_parse_wifi_device(
+    const char *payload,
+    char *device_id,
+    size_t capacity
+)
+{
+    const char *array = NULL;
+    size_t array_length = 0u;
+    size_t offset = 0u;
+    int next;
+    if (payload == NULL || device_id == NULL || capacity == 0u) return 0;
+    device_id[0] = '\0';
+    if (
+        msys_mipc_json_get_raw(
+            payload, "devices", &array, &array_length
+        ) != MSYS_MIPC_OK
+    ) return 0;
+    for (;;) {
+        const char *raw = NULL;
+        const char *metadata_raw = NULL;
+        size_t raw_length = 0u;
+        size_t metadata_length = 0u;
+        char object[OBJECT_CAPACITY];
+        char metadata[OBJECT_CAPACITY];
+        char candidate[MSYS_NATIVE_COMPONENT_CAPACITY];
+        char domain[32];
+        char kind[32];
+        int available = 0;
+        next = next_object(
+            array, array_length, &offset, &raw, &raw_length
+        );
+        if (next == 0) return 1;
+        if (next < 0) return 0;
+        if (
+            copy_object(raw, raw_length, object) == 0 ||
+            get_optional_string(
+                object, "id", candidate, sizeof(candidate)
+            ) == 0 ||
+            get_optional_string(object, "domain", domain, sizeof(domain)) == 0 ||
+            get_boolean(object, "available", &available) == 0 ||
+            msys_mipc_json_get_raw(
+                object, "metadata", &metadata_raw, &metadata_length
+            ) != MSYS_MIPC_OK ||
+            copy_object(metadata_raw, metadata_length, metadata) == 0 ||
+            get_optional_string(metadata, "kind", kind, sizeof(kind)) == 0
+        ) continue;
+        if (
+            available != 0 && strcmp(domain, "network") == 0 &&
+            strcmp(kind, "wifi") == 0 &&
+            strncmp(candidate, "network:", 8u) == 0 &&
+            strlen(candidate) < capacity
+        ) {
+            memcpy(device_id, candidate, strlen(candidate) + 1u);
+            return 1;
+        }
+    }
+}
+
+int msys_native_parse_wifi_state(
+    const char *payload,
+    int *connected,
+    int *signal_known,
+    int *signal_dbm
+)
+{
+    const char *state_raw = NULL;
+    const char *values_raw = NULL;
+    const char *status_raw = NULL;
+    const char *scan_raw = NULL;
+    size_t state_length = 0u;
+    size_t values_length = 0u;
+    size_t status_length = 0u;
+    size_t scan_length = 0u;
+    size_t offset = 0u;
+    char state[OBJECT_CAPACITY];
+    char values[OBJECT_CAPACITY];
+    char status[OBJECT_CAPACITY];
+    char identifier[MSYS_NATIVE_COMPONENT_CAPACITY];
+    char wpa_state[32];
+    char bssid[32];
+    int available = 0;
+    int next;
+    if (
+        payload == NULL || connected == NULL || signal_known == NULL ||
+        signal_dbm == NULL
+    ) return 0;
+    *connected = 0;
+    *signal_known = 0;
+    *signal_dbm = 0;
+    if (
+        msys_mipc_json_get_raw(
+            payload, "state", &state_raw, &state_length
+        ) != MSYS_MIPC_OK ||
+        copy_object(state_raw, state_length, state) == 0 ||
+        get_optional_string(
+            state, "id", identifier, sizeof(identifier)
+        ) == 0 ||
+        strncmp(identifier, "network:", 8u) != 0 ||
+        get_boolean(state, "available", &available) == 0
+    ) return 0;
+    if (available == 0) return 1;
+    if (
+        msys_mipc_json_get_raw(
+            state, "values", &values_raw, &values_length
+        ) != MSYS_MIPC_OK ||
+        copy_object(values_raw, values_length, values) == 0
+    ) return 0;
+    if (
+        msys_mipc_json_get_raw(
+            values, "wifi_status", &status_raw, &status_length
+        ) == MSYS_MIPC_NOT_FOUND
+    ) return 1;
+    if (
+        copy_object(status_raw, status_length, status) == 0 ||
+        get_optional_string(
+            status, "wpa_state", wpa_state, sizeof(wpa_state)
+        ) == 0
+    ) return 0;
+    if (strcmp(wpa_state, "COMPLETED") != 0) return 1;
+    *connected = 1;
+    if (
+        get_optional_string(status, "bssid", bssid, sizeof(bssid)) == 0 ||
+        bssid[0] == '\0'
+    ) return 1;
+    if (
+        msys_mipc_json_get_raw(
+            values, "scan_results", &scan_raw, &scan_length
+        ) == MSYS_MIPC_NOT_FOUND
+    ) return 1;
+    for (;;) {
+        const char *raw = NULL;
+        size_t raw_length = 0u;
+        char object[OBJECT_CAPACITY];
+        char candidate[32];
+        int parsed_signal;
+        next = next_object(scan_raw, scan_length, &offset, &raw, &raw_length);
+        if (next == 0) return 1;
+        if (next < 0) return 0;
+        if (
+            copy_object(raw, raw_length, object) == 0 ||
+            get_optional_string(
+                object, "bssid", candidate, sizeof(candidate)
+            ) == 0 ||
+            strcmp(candidate, bssid) != 0 ||
+            get_signal_dbm(object, &parsed_signal) == 0
+        ) continue;
+        *signal_known = 1;
+        *signal_dbm = parsed_signal;
+        return 1;
+    }
+}
+
 const char *msys_native_task_display_name(
     const msys_native_task *task,
     const msys_native_app *apps,

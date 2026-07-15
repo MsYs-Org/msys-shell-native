@@ -131,6 +131,13 @@ int msys_native_navigation_slot_center(int width, int slot);
  */
 int msys_native_center_baseline(int height, int glyph_y, int glyph_height);
 
+/* Zero is disconnected; connected signals use three compact strength tiers. */
+int msys_native_wifi_signal_level(
+    int connected,
+    int signal_known,
+    int signal_dbm
+);
+
 enum msys_native_shell_profile msys_native_profile_resolve(
     const char *preference,
     const char *profile_environment,

@@ -63,6 +63,19 @@ int msys_native_apply_task_resources(
     size_t count
 );
 
+int msys_native_parse_wifi_device(
+    const char *payload,
+    char *device_id,
+    size_t capacity
+);
+
+int msys_native_parse_wifi_state(
+    const char *payload,
+    int *connected,
+    int *signal_known,
+    int *signal_dbm
+);
+
 const char *msys_native_task_display_name(
     const msys_native_task *task,
     const msys_native_app *apps,

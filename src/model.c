@@ -108,6 +108,18 @@ int msys_native_center_baseline(int height, int glyph_y, int glyph_height)
     return (bounded_height - bounded_glyph_height) / 2 - glyph_y;
 }
 
+int msys_native_wifi_signal_level(
+    int connected,
+    int signal_known,
+    int signal_dbm
+)
+{
+    if (connected == 0) return 0;
+    if (signal_known == 0) return 1;
+    if (signal_dbm >= -55) return 3;
+    return signal_dbm >= -70 ? 2 : 1;
+}
+
 static int text_equal(const char *left, const char *right)
 {
     return left != NULL && right != NULL && strcmp(left, right) == 0;

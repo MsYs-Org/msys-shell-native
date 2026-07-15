@@ -17,6 +17,10 @@ int main(void)
     size_t count = 0u;
     size_t app_count = 0u;
     char escaped[64];
+    char wifi_device[MSYS_NATIVE_COMPONENT_CAPACITY];
+    int wifi_connected = 0;
+    int wifi_signal_known = 0;
+    int wifi_signal_dbm = 0;
     CHECK(msys_native_parse_apps(
         "{\"apps\":[{\"id\":\"org.msys.apps:notes\",\"name\":\"便笺\",\"summary\":\"First\",\"package_root\":\"/opt/msys/packages/notes\",\"icons\":[{\"path\":\"@package/files/icon.ppm\"}]},{\"id\":\"bad\",\"name\":\"skip\"},{\"id\":\"org.example:beta\"}]}",
         apps,
@@ -81,6 +85,44 @@ int main(void)
     CHECK(!tasks[1].pss_available);
     CHECK(!tasks[3].rss_available);
     CHECK(!msys_native_apply_task_resources("{\"windows\":{}}", tasks, count));
+    CHECK(msys_native_parse_wifi_device(
+        "{\"schema\":\"org.msys.hal.manager.v1\",\"devices\":["
+        "{\"id\":\"network:eth0\",\"domain\":\"network\",\"available\":true,"
+        "\"metadata\":{\"kind\":\"ethernet\"}},"
+        "{\"id\":\"network:wlan0\",\"domain\":\"network\",\"available\":true,"
+        "\"metadata\":{\"kind\":\"wifi\"}}]}",
+        wifi_device,
+        sizeof(wifi_device)
+    ));
+    CHECK(strcmp(wifi_device, "network:wlan0") == 0);
+    CHECK(msys_native_parse_wifi_state(
+        "{\"schema\":\"org.msys.hal.manager.v1\",\"state\":{"
+        "\"id\":\"network:wlan0\",\"domain\":\"network\",\"available\":true,"
+        "\"values\":{\"wifi_status\":{\"wpa_state\":\"COMPLETED\","
+        "\"ssid\":\"MEILIN\",\"bssid\":\"00:11:22:33:44:55\"},"
+        "\"scan_results\":[{\"bssid\":\"00:11:22:33:44:55\","
+        "\"signal_dbm\":-62,\"ssid\":\"MEILIN\"}]},\"mutable\":[\"action\"]}}",
+        &wifi_connected,
+        &wifi_signal_known,
+        &wifi_signal_dbm
+    ));
+    CHECK(wifi_connected == 1);
+    CHECK(wifi_signal_known == 1);
+    CHECK(wifi_signal_dbm == -62);
+    CHECK(msys_native_parse_wifi_state(
+        "{\"state\":{\"id\":\"network:wlan0\",\"available\":true,"
+        "\"values\":{\"wifi_status\":{\"wpa_state\":\"DISCONNECTED\"}}}}",
+        &wifi_connected,
+        &wifi_signal_known,
+        &wifi_signal_dbm
+    ));
+    CHECK(wifi_connected == 0 && wifi_signal_known == 0);
+    CHECK(!msys_native_parse_wifi_device(
+        "{\"devices\":{}}", wifi_device, sizeof(wifi_device)
+    ));
+    CHECK(!msys_native_parse_wifi_state(
+        "{\"state\":[]}", &wifi_connected, &wifi_signal_known, &wifi_signal_dbm
+    ));
     CHECK(!msys_native_parse_apps("{\"apps\":{}}", apps, 1u, &count));
     CHECK(msys_native_json_escape("a\"b\\c\n", escaped, sizeof(escaped)));
     CHECK(strcmp(escaped, "a\\\"b\\\\c\\n") == 0);

@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.shell.native",
     "name": "MSYS Native Shell",
-    "version": "0.3.16",
+    "version": "0.3.17",
     "kind": "system",
     "vendor": "MSYS",
     "summary": "Lean adaptive Xlib shell with app icons and task previews",
@@ -68,12 +68,14 @@
         "mipc.call:role:window-manager",
         "mipc.call:role:notification-center",
         "mipc.call:role:audio-manager",
+        "mipc.call:role:hal-manager",
         "mipc.event:subscribe:msys.display.output_recovered",
         "mipc.event:subscribe:msys.role.notification-presenter",
         "mipc.event:subscribe:msys.role.navigation-bar",
         "mipc.event:subscribe:msys.role.system-chrome",
         "mipc.event:subscribe:msys.install.package_changed",
         "mipc.event:subscribe:msys.lifecycle.transition",
+        "mipc.event:subscribe:msys.hal.changed",
         "mipc.event:publish:msys.shell.preferences.changed",
         "mipc.event:publish:msys.role.ready"
       ],

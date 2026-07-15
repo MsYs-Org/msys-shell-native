@@ -1,6 +1,10 @@
 # MSYS Native Shell
 
-Current source version: `0.3.16`.
+Current source version: `0.3.17`.
+
+Version 0.3.17 adds a compact HAL-backed Wi-Fi strength icon immediately to
+the left of Quick Controls. It reacts to HAL change events, uses a bounded
+low-frequency fallback refresh, and damages only its small top-bar rectangle.
 
 Version 0.3.16 gives the compact two-column Recents subtitle to the complete
 PSS/RSS value. Runtime state remains available through the task RPC instead of
@@ -23,7 +27,10 @@ One supervised component creates several independently identified X11 windows:
 - Material-like icon grid backed by the authoritative Core application inventory,
   with scrolling and package PPM icon declarations;
 - local-time system chrome with seconds, a notification-center entry on the
-  left, and an adaptive quick-controls entry on the right;
+  left, and an adaptive quick-controls entry on the right; a text-free Wi-Fi
+  glyph beside quick controls follows `role:hal-manager` state and
+  `msys.hal.changed`, with a bounded ten-second asynchronous fallback and
+  icon-only X11 damage;
 - gesture pill, or three-button navigation with
   `MSYS_NATIVE_NAV_MODE=buttons`;
 - responsive Recents backed by the selected window manager's real application

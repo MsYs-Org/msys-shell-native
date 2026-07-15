@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.16"
+#define APP_VERSION "0.3.17"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8
@@ -48,6 +48,8 @@
 #define AUDIO_STATE_TIMEOUT_MS 12000u
 #define AUDIO_WRITE_TIMEOUT_MS 10000u
 #define AUDIO_EDGE_ZONE_DIVISOR 5
+#define WIFI_REFRESH_INTERVAL_MS 10000u
+#define WIFI_STATE_TIMEOUT_MS 5000u
 
 enum catalog_state {
     CATALOG_LOADING = 0,
@@ -67,6 +69,8 @@ enum pending_kind {
     PENDING_NAVIGATION,
     PENDING_NOTIFICATION_CENTER,
     PENDING_SETTINGS_PANEL,
+    PENDING_WIFI_INVENTORY,
+    PENDING_WIFI_STATE,
     PENDING_AUDIO_STATE,
     PENDING_AUDIO_VOLUME,
     PENDING_AUDIO_MUTE
@@ -278,6 +282,12 @@ typedef struct native_shell {
     int recents_close_pressed;
     int controls_pressed;
     int controls_pressed_zone;
+    int wifi_known;
+    int wifi_connected;
+    int wifi_signal_level;
+    int wifi_refresh_queued;
+    uint64_t wifi_next_refresh_ms;
+    char wifi_device[MSYS_NATIVE_COMPONENT_CAPACITY];
     int audio_known;
     int audio_loading;
     int audio_available;
@@ -328,6 +338,7 @@ static void redraw_recents_viewport(
     const msys_native_recents_layout *layout
 );
 static void redraw_controls_row(native_shell *shell, int index);
+static void request_wifi_inventory(native_shell *shell);
 static void request_audio_state(native_shell *shell);
 static const char *tr(native_shell *shell, const char *key);
 static void hide_launch_transition(native_shell *shell);
@@ -1620,6 +1631,74 @@ static void chrome_clock_bounds(int width, int *x, int *clock_width)
     *x = (bounded_width - *clock_width) / 2;
 }
 
+static void chrome_wifi_bounds(int width, int *x, int *icon_width)
+{
+    *icon_width = width >= 96 ? 32 : (width > 0 ? width / 4 : 1);
+    if (*icon_width < 1) *icon_width = 1;
+    *x = width - 80;
+    if (*x < 0) *x = 0;
+    if (*x + *icon_width > width) *icon_width = width - *x;
+    if (*icon_width < 1) *icon_width = 1;
+}
+
+static void draw_chrome_wifi_icon(
+    native_shell *shell,
+    Drawable drawable,
+    int width,
+    int height
+)
+{
+    int x;
+    int icon_width;
+    int center_x;
+    int center_y = height / 2;
+    int base_y = center_y + 8;
+    int level = shell->wifi_connected != 0 ? shell->wifi_signal_level : 0;
+    chrome_wifi_bounds(width, &x, &icon_width);
+    center_x = x + icon_width / 2;
+    set_foreground(
+        shell,
+        shell->wifi_connected != 0 ? shell->foreground : shell->muted
+    );
+    XSetLineAttributes(
+        shell->display, shell->gc, 2u, LineSolid, CapRound, JoinRound
+    );
+    if (level >= 3) {
+        XDrawArc(
+            shell->display, drawable, shell->gc,
+            center_x - 13, base_y - 19, 26u, 20u, 0, 180 * 64
+        );
+    }
+    if (level >= 2) {
+        XDrawArc(
+            shell->display, drawable, shell->gc,
+            center_x - 9, base_y - 14, 18u, 14u, 0, 180 * 64
+        );
+    }
+    if (level >= 1) {
+        XDrawArc(
+            shell->display, drawable, shell->gc,
+            center_x - 5, base_y - 8, 10u, 8u, 0, 180 * 64
+        );
+        XFillArc(
+            shell->display, drawable, shell->gc,
+            center_x - 2, base_y - 2, 4u, 4u, 0, 360 * 64
+        );
+    } else {
+        XDrawArc(
+            shell->display, drawable, shell->gc,
+            center_x - 11, base_y - 17, 22u, 17u, 0, 180 * 64
+        );
+        XDrawLine(
+            shell->display, drawable, shell->gc,
+            center_x - 9, center_y - 9, center_x + 9, center_y + 9
+        );
+    }
+    XSetLineAttributes(
+        shell->display, shell->gc, 1u, LineSolid, CapButt, JoinMiter
+    );
+}
+
 static void draw_chrome(native_shell *shell)
 {
     XWindowAttributes attributes;
@@ -1665,6 +1744,9 @@ static void draw_chrome(native_shell *shell)
     set_foreground(shell, shell->foreground);
     XDrawArc(shell->display, shell->chrome, shell->gc, 13, middle_y - 8, 13u, 13u, 0, 360 * 64);
     XFillArc(shell->display, shell->chrome, shell->gc, 18, middle_y + 5, 4u, 4u, 0, 360 * 64);
+    draw_chrome_wifi_icon(
+        shell, shell->chrome, attributes.width, attributes.height
+    );
     XDrawLine(shell->display, shell->chrome, shell->gc, attributes.width - 29, middle_y - 7, attributes.width - 12, middle_y - 7);
     XDrawLine(shell->display, shell->chrome, shell->gc, attributes.width - 29, middle_y, attributes.width - 12, middle_y);
     XDrawLine(shell->display, shell->chrome, shell->gc, attributes.width - 29, middle_y + 7, attributes.width - 12, middle_y + 7);
@@ -1682,6 +1764,18 @@ static void draw_chrome_clock_damage(native_shell *shell)
     int width;
     if (!XGetWindowAttributes(shell->display, shell->chrome, &attributes)) return;
     chrome_clock_bounds(attributes.width, &x, &width);
+    begin_clip(shell, x, 0, width, attributes.height);
+    draw_chrome(shell);
+    end_clip(shell);
+}
+
+static void draw_chrome_wifi_damage(native_shell *shell)
+{
+    XWindowAttributes attributes;
+    int x;
+    int width;
+    if (!XGetWindowAttributes(shell->display, shell->chrome, &attributes)) return;
+    chrome_wifi_bounds(attributes.width, &x, &width);
     begin_clip(shell, x, 0, width, attributes.height);
     draw_chrome(shell);
     end_clip(shell);
@@ -2767,6 +2861,7 @@ static int initialize_ipc(native_shell *shell)
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.role.system-chrome");
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.install.package_changed");
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.lifecycle.transition");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.hal.changed");
     result = msys_mipc_send_ready(&shell->ipc);
     if (result != MSYS_MIPC_OK) {
         return 0;
@@ -2777,6 +2872,7 @@ static int initialize_ipc(native_shell *shell)
         "{\"role\":\"native-shell\",\"roles\":[\"launcher\",\"system-chrome\",\"navigation-bar\",\"task-switcher\",\"notification-presenter\"]}"
     );
     request_apps(shell);
+    request_wifi_inventory(shell);
     XFlush(shell->display);
     return 1;
 }
@@ -3088,6 +3184,97 @@ static int payload_percent_value(const char *payload, const char *field, int *va
     if (result > 100) return 0;
     *value = result;
     return 1;
+}
+
+static int wifi_call_pending(const native_shell *shell)
+{
+    return (
+        pending_has_kind(shell, PENDING_WIFI_INVENTORY) != 0 ||
+        pending_has_kind(shell, PENDING_WIFI_STATE) != 0
+    );
+}
+
+static int wifi_apply_snapshot(
+    native_shell *shell,
+    int connected,
+    int signal_level
+)
+{
+    int changed =
+        shell->wifi_known == 0 ||
+        shell->wifi_connected != connected ||
+        shell->wifi_signal_level != signal_level;
+    shell->wifi_known = 1;
+    shell->wifi_connected = connected;
+    shell->wifi_signal_level = signal_level;
+    if (changed != 0) draw_chrome_wifi_damage(shell);
+    return changed;
+}
+
+static void wifi_finish_refresh(native_shell *shell)
+{
+    if (shell->wifi_refresh_queued != 0) {
+        shell->wifi_refresh_queued = 0;
+        request_wifi_inventory(shell);
+    }
+}
+
+static void request_wifi_state(native_shell *shell)
+{
+    char escaped[MSYS_NATIVE_COMPONENT_CAPACITY * 2u];
+    char payload[MSYS_NATIVE_COMPONENT_CAPACITY * 2u + 48u];
+    if (
+        shell->wifi_device[0] == '\0' ||
+        msys_native_json_escape(
+            shell->wifi_device, escaped, sizeof(escaped)
+        ) == 0
+    ) {
+        wifi_apply_snapshot(shell, 0, 0);
+        wifi_finish_refresh(shell);
+        return;
+    }
+    (void)snprintf(
+        payload,
+        sizeof(payload),
+        "{\"id\":\"%s\",\"refresh\":false}",
+        escaped
+    );
+    if (send_async(
+        shell,
+        PENDING_WIFI_STATE,
+        0u,
+        "role:hal-manager",
+        "get_state",
+        payload,
+        WIFI_STATE_TIMEOUT_MS,
+        1
+    ) == 0u) {
+        wifi_apply_snapshot(shell, 0, 0);
+        wifi_finish_refresh(shell);
+    }
+}
+
+static void request_wifi_inventory(native_shell *shell)
+{
+    if (shell->supervised == 0) return;
+    if (wifi_call_pending(shell) != 0) {
+        shell->wifi_refresh_queued = 1;
+        return;
+    }
+    shell->wifi_next_refresh_ms = now_ms() + WIFI_REFRESH_INTERVAL_MS;
+    if (send_async(
+        shell,
+        PENDING_WIFI_INVENTORY,
+        0u,
+        "role:hal-manager",
+        "inventory",
+        "{\"domains\":[\"network\"],\"refresh\":false}",
+        WIFI_STATE_TIMEOUT_MS,
+        1
+    ) == 0u) {
+        shell->wifi_device[0] = '\0';
+        wifi_apply_snapshot(shell, 0, 0);
+    }
 }
 
 static void audio_mark_unavailable(native_shell *shell, const char *reason)
@@ -4158,6 +4345,13 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
             show_toast(shell, tr(shell, "error.notification_center_unavailable"));
         } else if (pending.kind == PENDING_SETTINGS_PANEL) {
             show_toast(shell, tr(shell, "error.settings_unavailable"));
+        } else if (
+            pending.kind == PENDING_WIFI_INVENTORY ||
+            pending.kind == PENDING_WIFI_STATE
+        ) {
+            shell->wifi_device[0] = '\0';
+            wifi_apply_snapshot(shell, 0, 0);
+            wifi_finish_refresh(shell);
         } else if (pending.kind == PENDING_AUDIO_STATE) {
             audio_mark_unavailable(shell, "provider-unavailable");
             if (shell->controls_visible != 0) {
@@ -4289,6 +4483,37 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
         break;
     case PENDING_SETTINGS_PANEL:
         break;
+    case PENDING_WIFI_INVENTORY:
+        if (msys_native_parse_wifi_device(
+            payload, shell->wifi_device, sizeof(shell->wifi_device)
+        ) == 0 || shell->wifi_device[0] == '\0') {
+            shell->wifi_device[0] = '\0';
+            wifi_apply_snapshot(shell, 0, 0);
+            wifi_finish_refresh(shell);
+        } else {
+            request_wifi_state(shell);
+        }
+        break;
+    case PENDING_WIFI_STATE:
+        {
+            int connected = 0;
+            int signal_known = 0;
+            int signal_dbm = 0;
+            int level;
+            if (msys_native_parse_wifi_state(
+                payload, &connected, &signal_known, &signal_dbm
+            ) == 0) {
+                connected = 0;
+                signal_known = 0;
+                signal_dbm = 0;
+            }
+            level = msys_native_wifi_signal_level(
+                connected, signal_known, signal_dbm
+            );
+            wifi_apply_snapshot(shell, connected, level);
+            wifi_finish_refresh(shell);
+        }
+        break;
     case PENDING_AUDIO_STATE:
     case PENDING_AUDIO_VOLUME:
     case PENDING_AUDIO_MUTE:
@@ -4349,6 +4574,8 @@ static void handle_event(native_shell *shell, const char *packet)
         } else {
             request_apps(shell);
         }
+    } else if (strcmp(topic, "msys.hal.changed") == 0) {
+        request_wifi_inventory(shell);
     } else if (strcmp(topic, "msys.lifecycle.transition") == 0) {
         char phase[32];
         char component[MSYS_NATIVE_COMPONENT_CAPACITY];
@@ -5336,6 +5563,13 @@ static void periodic(native_shell *shell)
     enum msys_native_navigation_action action;
     size_t position;
     int visual_change = 0;
+    if (
+        shell->supervised != 0 &&
+        shell->wifi_next_refresh_ms != 0u &&
+        current >= shell->wifi_next_refresh_ms
+    ) {
+        request_wifi_inventory(shell);
+    }
     if (shell->gesture.active != 0) {
         action = msys_native_gesture_motion(
             &shell->gesture,
@@ -5531,6 +5765,15 @@ static void periodic(native_shell *shell)
         } else if (expired.kind == PENDING_SETTINGS_PANEL) {
             show_toast(shell, tr(shell, "error.settings_unavailable"));
             visual_change = 1;
+        } else if (
+            expired.kind == PENDING_WIFI_INVENTORY ||
+            expired.kind == PENDING_WIFI_STATE
+        ) {
+            shell->wifi_device[0] = '\0';
+            if (wifi_apply_snapshot(shell, 0, 0) != 0) {
+                visual_change = 1;
+            }
+            wifi_finish_refresh(shell);
         } else if (expired.kind == PENDING_AUDIO_STATE) {
             audio_mark_unavailable(shell, "provider-unavailable");
             if (shell->controls_visible != 0) {

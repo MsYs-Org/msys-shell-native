@@ -17,6 +17,75 @@ from pathlib import Path
 from typing import Callable
 
 
+BACKGROUND_WIFI_RESPONSES = False
+
+
+def wifi_inventory_payload() -> dict:
+    return {
+        "schema": "org.msys.hal.manager.v1",
+        "revision": 1,
+        "domains": [{
+            "domain": "network",
+            "status": "available",
+            "provider": "org.example.hal:network",
+        }],
+        "devices": [{
+            "id": "network:wlan0",
+            "domain": "network",
+            "name": "wlan0",
+            "available": True,
+            "mutable": ["action"],
+            "metadata": {"kind": "wifi"},
+            "provider": "org.example.hal:network",
+        }],
+    }
+
+
+def wifi_state_payload(*, connected: bool, signal_dbm: int = -62) -> dict:
+    status = (
+        {
+            "wpa_state": "COMPLETED",
+            "ssid": "MEILIN",
+            "bssid": "00:11:22:33:44:55",
+        }
+        if connected else {"wpa_state": "DISCONNECTED"}
+    )
+    return {
+        "schema": "org.msys.hal.manager.v1",
+        "revision": 1,
+        "provider": "org.example.hal:network",
+        "state": {
+            "id": "network:wlan0",
+            "domain": "network",
+            "available": True,
+            "values": {
+                "kind": "wifi",
+                "wifi_status": status,
+                "scan_results": ([{
+                    "bssid": "00:11:22:33:44:55",
+                    "signal_dbm": signal_dbm,
+                    "ssid": "MEILIN",
+                }] if connected else []),
+            },
+            "mutable": ["action"],
+        },
+    }
+
+
+def handle_background_wifi(channel: socket.socket, packet: dict) -> bool:
+    if not BACKGROUND_WIFI_RESPONSES or packet.get("type") != "call":
+        return False
+    if packet.get("target") != "role:hal-manager":
+        return False
+    if packet.get("method") == "inventory":
+        reply(channel, packet, wifi_inventory_payload())
+        return True
+    if packet.get("method") == "get_state":
+        reply(channel, packet, wifi_state_payload(connected=True))
+        return True
+    return False
+
+
 class XSetWindowAttributes(ctypes.Structure):
     _fields_ = [
         ("background_pixmap", ctypes.c_ulong),
@@ -227,6 +296,8 @@ def wait_for(channel: socket.socket, predicate: Callable[[dict], bool]) -> dict:
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         packet = receive(channel)
+        if handle_background_wifi(channel, packet):
+            continue
         if predicate(packet):
             return packet
     raise TimeoutError("expected component packet was not received")
@@ -239,16 +310,23 @@ def assert_no_outbound_call(
     timeout: float = 0.25,
 ) -> None:
     previous_timeout = channel.gettimeout()
-    channel.settimeout(timeout)
+    deadline = time.monotonic() + timeout
     try:
-        packet = receive(channel)
-    except socket.timeout:
-        return
+        while time.monotonic() < deadline:
+            channel.settimeout(max(0.01, deadline - time.monotonic()))
+            try:
+                packet = receive(channel)
+            except socket.timeout:
+                return
+            if handle_background_wifi(channel, packet):
+                continue
+            if outbound_call(target, method)(packet):
+                raise RuntimeError(
+                    f"cancelled release still called {target}.{method}: {packet}"
+                )
+            raise RuntimeError(f"unexpected packet during cancelled release: {packet}")
     finally:
         channel.settimeout(previous_timeout)
-    if outbound_call(target, method)(packet):
-        raise RuntimeError(f"cancelled release still called {target}.{method}: {packet}")
-    raise RuntimeError(f"unexpected packet during cancelled release: {packet}")
 
 
 def packet_type(name: str, request_id: int | None = None) -> Callable[[dict], bool]:
@@ -663,6 +741,7 @@ def wait_window_hidden(title: str, timeout: float = 2) -> bool:
 
 
 def main() -> int:
+    global BACKGROUND_WIFI_RESPONSES
     binary = Path(sys.argv[1] if len(sys.argv) > 1 else "bin/msys-shell-native").resolve()
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     parent.settimeout(8)
@@ -695,6 +774,25 @@ def main() -> int:
         # Startup list_apps remains pending while the single reader services an
         # unrelated inbound status call. This proves no synchronous RPC wait.
         app_request = wait_for(parent, outbound_call("msys.core", "list_apps"))
+        wifi_inventory = wait_for(
+            parent, outbound_call("role:hal-manager", "inventory")
+        )
+        if wifi_inventory.get("payload") != {
+            "domains": ["network"],
+            "refresh": False,
+        }:
+            raise RuntimeError(f"wrong Wi-Fi inventory payload: {wifi_inventory}")
+        reply(parent, wifi_inventory, wifi_inventory_payload())
+        wifi_state = wait_for(
+            parent, outbound_call("role:hal-manager", "get_state")
+        )
+        if wifi_state.get("payload") != {
+            "id": "network:wlan0",
+            "refresh": False,
+        }:
+            raise RuntimeError(f"wrong Wi-Fi state payload: {wifi_state}")
+        reply(parent, wifi_state, wifi_state_payload(connected=False))
+        BACKGROUND_WIFI_RESPONSES = True
         send(parent, {"type": "call", "id": 40, "method": "status", "payload": {}})
         status = wait_for(parent, packet_type("return", 40))
         # A package event arriving while the first catalog request is pending
@@ -740,6 +838,37 @@ def main() -> int:
             raise RuntimeError(f"launcher did not retain authoritative apps: {listed}")
         if listed_apps[0].get("icon") != str(thumbnail):
             raise RuntimeError(f"launcher did not resolve the package icon: {listed}")
+
+        # Capture early in the current second so the clock cannot tick during
+        # the short event/reply sequence.  The manifest test separately proves
+        # that the production redraw is clipped to the Wi-Fi icon rectangle.
+        while not 0.12 <= time.time() % 1.0 <= 0.22:
+            time.sleep(0.01)
+        chrome_before_wifi = window_pixel_digest("MSYS Chrome")
+        BACKGROUND_WIFI_RESPONSES = False
+        send(parent, {
+            "type": "event",
+            "topic": "msys.hal.changed",
+            "payload": {
+                "schema": "org.msys.hal.manager.v1",
+                "kind": "state-changed",
+                "domain": "network",
+                "id": "network:wlan0",
+            },
+        })
+        changed_inventory = wait_for(
+            parent, outbound_call("role:hal-manager", "inventory")
+        )
+        reply(parent, changed_inventory, wifi_inventory_payload())
+        changed_state = wait_for(
+            parent, outbound_call("role:hal-manager", "get_state")
+        )
+        reply(parent, changed_state, wifi_state_payload(connected=True, signal_dbm=-62))
+        time.sleep(0.08)
+        if window_pixel_digest("MSYS Chrome") == chrome_before_wifi:
+            raise RuntimeError("HAL Wi-Fi event did not redraw the chrome signal icon")
+        assert_no_outbound_call(parent, "role:hal-manager", "inventory")
+        BACKGROUND_WIFI_RESPONSES = True
 
         input_mode = os.environ.get("MSYS_PROBE_INPUT_MODE", "").strip()
         if input_mode:
@@ -1106,7 +1235,11 @@ def main() -> int:
         # A duplicate terminal event while the first inventory request is in
         # flight becomes one bounded follow-up rather than parallel readers.
         send(parent, failed_event)
-        reply_recents_snapshot(parent, abnormal_refresh, alpha_only)
+        # The duplicate is queued before this first list_windows reply, so the
+        # Shell intentionally starts the coalesced list request before it asks
+        # Core for resources.  Reply to both inventories first, then consume
+        # the single resource snapshot for the authoritative second result.
+        reply(parent, abnormal_refresh, alpha_only)
         coalesced_refresh = wait_for(
             parent, outbound_call("role:window-manager", "list_windows")
         )

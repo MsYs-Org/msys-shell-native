@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.16")
+        self.assertEqual(self.document["package"]["version"], "0.3.17")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.16"', implementation)
+        self.assertIn('#define APP_VERSION "0.3.17"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -84,6 +84,12 @@ class NativeShellManifestTests(unittest.TestCase):
         catalog = json.loads((ROOT / metadata["catalog"]).read_text(encoding="utf-8"))
         self.assertEqual(set(catalog["messages"]), {"en-US", "zh"})
         self.assertEqual(
+            set(catalog["messages"]["en-US"]),
+            set(catalog["messages"]["zh"]),
+        )
+        self.assertNotIn("chrome.wifi", catalog["messages"]["en-US"])
+        self.assertNotIn("chrome.wifi", catalog["messages"]["zh"])
+        self.assertEqual(
             catalog["messages"]["zh"]["package.name"],
             "MSYS 原生桌面",
         )
@@ -99,6 +105,7 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("mipc.call:role:window-manager", permissions)
         self.assertIn("mipc.call:role:notification-center", permissions)
         self.assertIn("mipc.call:role:audio-manager", permissions)
+        self.assertIn("mipc.call:role:hal-manager", permissions)
         self.assertIn("mipc.call:msys.core", permissions)
         self.assertIn(
             "mipc.event:subscribe:msys.install.package_changed",
@@ -112,6 +119,7 @@ class NativeShellManifestTests(unittest.TestCase):
             "mipc.event:subscribe:msys.lifecycle.transition",
             permissions,
         )
+        self.assertIn("mipc.event:subscribe:msys.hal.changed", permissions)
         self.assertIn("mipc.event:publish:msys.shell.preferences.changed", permissions)
         banned = ("systemctl", "dbus", "apt-get", "pip install", "openbox")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8").lower()
@@ -334,6 +342,24 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("PENDING_AUDIO_STATE", implementation)
         self.assertIn("redraw_controls_row(shell, AUDIO_CONTROL_ROW)", implementation)
         self.assertNotIn("systemctl", implementation.lower())
+
+    def test_chrome_wifi_uses_hal_events_and_bounded_icon_damage(self) -> None:
+        implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
+        self.assertIn("#define WIFI_REFRESH_INTERVAL_MS 10000u", implementation)
+        self.assertIn('"role:hal-manager"', implementation)
+        self.assertIn('"inventory"', implementation)
+        self.assertIn('"get_state"', implementation)
+        self.assertIn('"msys.hal.changed"', implementation)
+        self.assertIn("PENDING_WIFI_INVENTORY", implementation)
+        self.assertIn("PENDING_WIFI_STATE", implementation)
+        damage = implementation[
+            implementation.index("static void draw_chrome_wifi_damage"):
+            implementation.index("static void draw_chrome_action_damage")
+        ]
+        self.assertIn("chrome_wifi_bounds", damage)
+        self.assertIn("begin_clip(shell, x, 0, width, attributes.height)", damage)
+        self.assertNotIn("XClearWindow", damage)
+        self.assertNotIn("/sys/", implementation)
 
 
 if __name__ == "__main__":
