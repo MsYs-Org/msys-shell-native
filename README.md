@@ -1,6 +1,10 @@
 # MSYS Native Shell
 
-Current source version: `0.3.15`.
+Current source version: `0.3.16`.
+
+Version 0.3.16 gives the compact two-column Recents subtitle to the complete
+PSS/RSS value. Runtime state remains available through the task RPC instead of
+truncating the memory value on a 320-pixel display.
 
 Version 0.3.15 resolves every Recents pointer release from root coordinates.
 This keeps the visible Exit control reliable with release-only touch drivers

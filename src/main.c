@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.15"
+#define APP_VERSION "0.3.16"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8
@@ -1923,23 +1923,6 @@ static void recents_card_rect(
     *y = layout->top + row * (layout->card_height + layout->gap) - scroll;
 }
 
-static const char *task_state_label(
-    native_shell *shell,
-    const msys_native_task *task
-)
-{
-    const char *state;
-    if (strcmp(task->lifecycle, "background") == 0) {
-        return tr(shell, "recents.state_background");
-    }
-    state = task->component_state[0] != '\0'
-        ? task->component_state : task->state;
-    if (strcmp(state, "ready") == 0) return tr(shell, "recents.state_ready");
-    if (strcmp(state, "visible") == 0) return tr(shell, "recents.state_visible");
-    if (strcmp(state, "minimized") == 0) return tr(shell, "recents.state_minimized");
-    return state[0] != '\0' ? state : tr(shell, "recents.state_unknown");
-}
-
 static void format_task_memory(
     native_shell *shell,
     const msys_native_task *task,
@@ -1997,7 +1980,6 @@ static void draw_task_card(
     int preview_width;
     int title_y;
     char memory[48];
-    char metadata[128];
     int active = shell->recents_pressed == (int)index ||
         shell->recents_pulse == (int)index;
     int drag = shell->recents_horizontal_drag != 0 && shell->recents_pressed == (int)index
@@ -2062,20 +2044,13 @@ static void draw_task_card(
         layout->card_width - 58, title, shell->foreground
     );
     format_task_memory(shell, &shell->tasks[index], memory, sizeof(memory));
-    (void)snprintf(
-        metadata,
-        sizeof(metadata),
-        "%s · %s",
-        task_state_label(shell, &shell->tasks[index]),
-        memory
-    );
     draw_text_ellipsized(
         shell,
         shell->recents,
         x + 14,
         title_y + 18,
         layout->card_width - 28,
-        metadata,
+        memory,
         shell->muted
     );
     set_foreground(shell, shell->accent);
