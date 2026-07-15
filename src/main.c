@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.8"
+#define APP_VERSION "0.3.9"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define TOAST_VISIBLE_MS 2600u
@@ -1857,6 +1857,9 @@ static void draw_task_card(
     size_t index
 )
 {
+    const char *title = msys_native_task_display_name(
+        &shell->tasks[index], shell->apps, shell->app_count
+    );
     int x;
     int y;
     int preview_x;
@@ -1918,13 +1921,13 @@ static void draw_task_card(
             preview_x + (preview_width - icon) / 2,
             preview_y + (layout->preview_height - icon) / 2,
             icon,
-            shell->tasks[index].title
+            title
         );
     }
     title_y = y + layout->preview_height + 37;
     draw_text_ellipsized(
         shell, shell->recents, x + 14, title_y,
-        layout->card_width - 58, shell->tasks[index].title, shell->foreground
+        layout->card_width - 58, title, shell->foreground
     );
     set_foreground(shell, shell->accent);
     XDrawLine(shell->display, shell->recents, shell->gc, x + layout->card_width - 31, title_y - 12, x + layout->card_width - 19, title_y);
@@ -3770,6 +3773,9 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
             sort_apps(shell);
         }
         draw_launcher(shell);
+        if (shell->recents_mapped != 0) {
+            draw_recents(shell);
+        }
         if (shell->apps_refresh_queued != 0) {
             shell->apps_refresh_queued = 0;
             request_apps(shell);

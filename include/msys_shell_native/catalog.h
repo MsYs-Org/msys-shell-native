@@ -50,6 +50,12 @@ int msys_native_parse_tasks(
     size_t *count
 );
 
+const char *msys_native_task_display_name(
+    const msys_native_task *task,
+    const msys_native_app *apps,
+    size_t app_count
+);
+
 int msys_native_json_escape(
     const char *value,
     char *output,

@@ -1,6 +1,6 @@
 # MSYS Native Shell
 
-Current source version: `0.3.8`.
+Current source version: `0.3.9`.
 
 This is a lean adaptive X11 shell, implemented as one C process using Xlib
 and the dependency-free JSON mIPC C SDK. This repository supplies the shell
@@ -61,6 +61,8 @@ replies are bounded and safe.
 The top-to-bottom X11 inventory is de-duplicated by managed component (or
 stable window ID for external windows). Visible tasks precede minimized and
 hidden tasks while window-manager order remains stable inside each state. A
+managed task card resolves its component through the localized app catalog;
+unmanaged external windows retain their X11 title fallback. A
 terminal `closed`/`failed` lifecycle event refreshes a visible Overview through
 one coalesced request. Closing a card follows the same path, clamps the scroll
 offset after reflow, and clears the union of old/new card pixels inside the

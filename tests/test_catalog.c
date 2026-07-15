@@ -15,28 +15,34 @@ int main(void)
     msys_native_app apps[MSYS_NATIVE_MAX_APPS];
     msys_native_task tasks[MSYS_NATIVE_MAX_TASKS];
     size_t count = 0u;
+    size_t app_count = 0u;
     char escaped[64];
     CHECK(msys_native_parse_apps(
-        "{\"apps\":[{\"id\":\"org.example:alpha\",\"name\":\"Alpha\",\"summary\":\"First\",\"package_root\":\"/opt/msys/packages/alpha\",\"icons\":[{\"path\":\"@package/files/icon.ppm\"}]},{\"id\":\"bad\",\"name\":\"skip\"},{\"id\":\"org.example:beta\"}]}",
+        "{\"apps\":[{\"id\":\"org.msys.apps:notes\",\"name\":\"便笺\",\"summary\":\"First\",\"package_root\":\"/opt/msys/packages/notes\",\"icons\":[{\"path\":\"@package/files/icon.ppm\"}]},{\"id\":\"bad\",\"name\":\"skip\"},{\"id\":\"org.example:beta\"}]}",
         apps,
         MSYS_NATIVE_MAX_APPS,
         &count
     ));
     CHECK(count == 2u);
-    CHECK(strcmp(apps[0].component, "org.example:alpha") == 0);
+    CHECK(strcmp(apps[0].component, "org.msys.apps:notes") == 0);
+    CHECK(strcmp(apps[0].name, "便笺") == 0);
     CHECK(strcmp(apps[0].summary, "First") == 0);
-    CHECK(strcmp(apps[0].icon_path, "/opt/msys/packages/alpha/files/icon.ppm") == 0);
+    CHECK(strcmp(apps[0].icon_path, "/opt/msys/packages/notes/files/icon.ppm") == 0);
     CHECK(strcmp(apps[1].name, "org.example:beta") == 0);
+    app_count = count;
     CHECK(msys_native_parse_tasks(
-        "{\"schema\":\"msys.window-list.v1\",\"windows\":[{\"component\":\"org.example:alpha\",\"title\":\"Alpha\",\"kind\":\"application\",\"role\":\"application\",\"native_id\":\"0x2a\",\"thumbnail\":\"/tmp/alpha.ppm\"},{\"component\":null,\"identity\":null,\"id\":\"msys.x11-window.v1:7:1\",\"title\":\"External\"},{\"id\":\"msys.x11-window.v1:8:1\",\"title\":\"Chrome\",\"kind\":\"overlay\"},{\"title\":\"skip\"}]}",
+        "{\"schema\":\"msys.window-list.v1\",\"windows\":[{\"component\":\"org.msys.apps:notes\",\"title\":\"MSYS Notes - clipped\",\"kind\":\"application\",\"role\":\"application\",\"native_id\":\"0x2a\",\"thumbnail\":\"/tmp/notes.ppm\"},{\"component\":null,\"identity\":null,\"id\":\"msys.x11-window.v1:7:1\",\"title\":\"External\"},{\"id\":\"msys.x11-window.v1:8:1\",\"title\":\"Chrome\",\"kind\":\"overlay\"},{\"title\":\"skip\"}]}",
         tasks,
         MSYS_NATIVE_MAX_TASKS,
         &count
     ));
     CHECK(count == 2u);
     CHECK(strcmp(tasks[1].window_id, "msys.x11-window.v1:7:1") == 0);
-    CHECK(strcmp(tasks[0].thumbnail, "/tmp/alpha.ppm") == 0);
+    CHECK(strcmp(tasks[0].thumbnail, "/tmp/notes.ppm") == 0);
     CHECK(strcmp(tasks[0].native_id, "0x2a") == 0);
+    CHECK(strcmp(msys_native_task_display_name(&tasks[0], apps, app_count), "便笺") == 0);
+    CHECK(strcmp(msys_native_task_display_name(&tasks[1], apps, app_count), "External") == 0);
+    CHECK(strcmp(msys_native_task_display_name(&tasks[0], NULL, 0u), "MSYS Notes - clipped") == 0);
     CHECK(msys_native_parse_tasks(
         "{\"windows\":["
         "{\"component\":\"org.example:beta\",\"id\":\"beta-hidden\",\"title\":\"Beta stale\",\"state\":\"hidden\"},"

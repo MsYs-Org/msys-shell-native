@@ -411,6 +411,30 @@ int msys_native_parse_tasks(
     return 1;
 }
 
+const char *msys_native_task_display_name(
+    const msys_native_task *task,
+    const msys_native_app *apps,
+    size_t app_count
+)
+{
+    size_t index;
+
+    if (task == NULL) {
+        return "";
+    }
+    if (task->component[0] != '\0' && apps != NULL) {
+        for (index = 0u; index < app_count; index++) {
+            if (
+                strcmp(task->component, apps[index].component) == 0 &&
+                apps[index].name[0] != '\0'
+            ) {
+                return apps[index].name;
+            }
+        }
+    }
+    return task->title;
+}
+
 int msys_native_json_escape(
     const char *value,
     char *output,
