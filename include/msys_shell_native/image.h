@@ -25,7 +25,21 @@ int msys_native_ppm_load(
 
 void msys_native_ppm_free(msys_native_ppm *image);
 
-/* Nearest-neighbour conversion into the target server's native TrueColor image. */
+/*
+ * Sample one resized pixel.  Minification uses an exact box average to avoid
+ * screenshot aliasing; magnification uses bilinear interpolation.  The
+ * implementation needs no full-size intermediate image.
+ */
+int msys_native_ppm_sample_resized(
+    const msys_native_ppm *source,
+    int width,
+    int height,
+    int x,
+    int y,
+    unsigned char output[3]
+);
+
+/* Antialiased conversion into the target server's native TrueColor image. */
 XImage *msys_native_ppm_ximage(
     Display *display,
     Visual *visual,

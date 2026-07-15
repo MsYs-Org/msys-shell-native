@@ -195,6 +195,11 @@ void msys_native_recents_compute(
         layout->columns = bounded(
             (available_width + layout->gap) / (292 + layout->gap), 1, 4
         );
+    } else if (profile == MSYS_NATIVE_PROFILE_MOBILE) {
+        /* Phone Overview is a compact screenshot grid.  Two 139px cards on
+         * the reference 320px portrait surface retain the application's
+         * work-area aspect ratio while keeping two tasks visible per row. */
+        layout->columns = available_width >= 260 ? 2 : 1;
     } else if (width - right_inset > height - top_inset - bottom_inset) {
         layout->columns = available_width >= 420 ? 2 : 1;
     } else {

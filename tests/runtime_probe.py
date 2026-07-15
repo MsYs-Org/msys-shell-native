@@ -823,10 +823,15 @@ def main() -> int:
             if len(close_ready.get("payload", {}).get("tasks", [])) != 2:
                 raise RuntimeError(f"task cards were not ready to close: {close_ready}")
             recents_width, recents_height = window_geometry("MSYS Recents")
+            recents_margin = 14
+            recents_gap = 14
+            first_card_width = (
+                recents_width - recents_margin * 2 - recents_gap
+            ) // 2
             debug_input(
                 "--debug-click-identity",
                 "org.msys.shell.task-switcher",
-                str(recents_width - 28),
+                str(recents_margin + first_card_width - 28),
                 str(min(240, recents_height - 24)),
             )
         else:

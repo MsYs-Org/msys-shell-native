@@ -858,6 +858,60 @@ static void end_clip(native_shell *shell)
     shell->clip_active = 0;
 }
 
+static void restore_clip(
+    native_shell *shell,
+    int previous_active,
+    const XRectangle *previous
+)
+{
+    if (previous_active != 0 && previous != NULL) {
+        begin_clip(
+            shell,
+            (int)previous->x,
+            (int)previous->y,
+            (int)previous->width,
+            (int)previous->height
+        );
+    } else {
+        end_clip(shell);
+    }
+}
+
+/* Add a child clip without losing an Expose/damage clip owned by the caller. */
+static int begin_clip_intersection(
+    native_shell *shell,
+    int x,
+    int y,
+    int width,
+    int height,
+    int *previous_active,
+    XRectangle *previous
+)
+{
+    int left = x;
+    int top = y;
+    int right = x + width;
+    int bottom = y + height;
+    if (previous_active == NULL || previous == NULL || width < 1 || height < 1) {
+        return 0;
+    }
+    *previous_active = shell->clip_active;
+    *previous = shell->clip;
+    if (shell->clip_active != 0) {
+        int old_left = (int)shell->clip.x;
+        int old_top = (int)shell->clip.y;
+        int old_right = old_left + (int)shell->clip.width;
+        int old_bottom = old_top + (int)shell->clip.height;
+        if (left < old_left) left = old_left;
+        if (top < old_top) top = old_top;
+        if (right > old_right) right = old_right;
+        if (bottom > old_bottom) bottom = old_bottom;
+    }
+    if (right <= left || bottom <= top) return 0;
+    begin_clip(shell, left, top, right - left, bottom - top);
+    return 1;
+}
+
 static void image_cache_dispose(native_image_cache *cache)
 {
     if (cache == NULL) return;
@@ -1886,6 +1940,8 @@ static void draw_recents(native_shell *shell)
     int right;
     int bottom;
     int accent_width;
+    int previous_clip_active;
+    XRectangle previous_clip;
     if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) return;
     recents_layout(shell, attributes.width, attributes.height, &layout);
     recents_surface_insets(
@@ -1930,17 +1986,30 @@ static void draw_recents(native_shell *shell)
         draw_text(shell, shell->recents, layout.margin, layout.top + 24, tr(shell, "recents.empty"), shell->muted);
         return;
     }
-    for (index = 0u; index < shell->task_count; index++) draw_task_card(shell, &layout, index);
-    draw_scroll_indicator(
+    if (begin_clip_intersection(
         shell,
-        shell->recents,
-        attributes.width - right - 8,
+        0,
         layout.top,
+        attributes.width,
         layout.viewport_height,
-        layout.content_height,
-        layout.viewport_height,
-        shell->recents_scroll
-    );
+        &previous_clip_active,
+        &previous_clip
+    )) {
+        for (index = 0u; index < shell->task_count; index++) {
+            draw_task_card(shell, &layout, index);
+        }
+        draw_scroll_indicator(
+            shell,
+            shell->recents,
+            attributes.width - right - 8,
+            layout.top,
+            layout.viewport_height,
+            layout.content_height,
+            layout.viewport_height,
+            shell->recents_scroll
+        );
+        restore_clip(shell, previous_clip_active, &previous_clip);
+    }
     (void)bottom;
 }
 
@@ -3996,6 +4065,34 @@ static void redraw_recents_viewport(
     end_clip(shell);
 }
 
+static void redraw_recents_damage(
+    native_shell *shell,
+    const XWindowAttributes *attributes,
+    const msys_native_recents_layout *layout,
+    int x,
+    int y,
+    int width,
+    int height
+)
+{
+    int previous_clip_active;
+    XRectangle previous_clip;
+    if (attributes == NULL || layout == NULL) return;
+    if (!begin_clip_intersection(
+        shell,
+        x,
+        y < layout->top ? layout->top : y,
+        width,
+        (y + height > layout->top + layout->viewport_height
+            ? layout->top + layout->viewport_height : y + height) -
+            (y < layout->top ? layout->top : y),
+        &previous_clip_active,
+        &previous_clip
+    )) return;
+    draw_recents(shell);
+    restore_clip(shell, previous_clip_active, &previous_clip);
+}
+
 static void redraw_recents_card(native_shell *shell, size_t index)
 {
     XWindowAttributes attributes;
@@ -4008,9 +4105,10 @@ static void redraw_recents_card(native_shell *shell, size_t index)
     ) return;
     recents_layout(shell, attributes.width, attributes.height, &layout);
     recents_card_rect(&layout, shell->recents_scroll, index, &x, &y);
-    begin_clip(shell, x - 3, y - 3, layout.card_width + 6, layout.card_height + 6);
-    draw_recents(shell);
-    end_clip(shell);
+    redraw_recents_damage(
+        shell, &attributes, &layout,
+        x - 3, y - 3, layout.card_width + 6, layout.card_height + 6
+    );
 }
 
 static void pulse_recents_card(native_shell *shell, size_t index, uint64_t current)
@@ -4377,9 +4475,10 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             );
             left = card_x + (old_offset < delta_x ? old_offset : delta_x) - 3;
             width = layout.card_width + abs(delta_x - old_offset) + 6;
-            begin_clip(shell, left, card_y - 3, width, layout.card_height + 6);
-            draw_recents(shell);
-            end_clip(shell);
+            redraw_recents_damage(
+                shell, &attributes, &layout,
+                left, card_y - 3, width, layout.card_height + 6
+            );
         } else if (shell->recents_horizontal_drag == 0 && abs(delta_y) > 8) {
             int old_scroll = shell->recents_scroll;
             shell->recents_dragging = 1;
@@ -4453,10 +4552,26 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             shell->recents_horizontal_drag != 0 && pressed >= 0 &&
             abs(shell->recents_drag_offset) >= layout.card_width / 3
         ) {
+            int card_x;
+            int card_y;
+            int offset = shell->recents_drag_offset;
+            recents_card_rect(
+                &layout, shell->recents_scroll, (size_t)pressed, &card_x, &card_y
+            );
             shell->recents_horizontal_drag = 0;
             shell->recents_drag_offset = 0;
             shell->recents_pressed = -1;
-            pulse_recents_card(shell, (size_t)pressed, current);
+            shell->recents_pulse = pressed;
+            shell->recents_pulse_until_ms = current + TRANSITION_PULSE_MS;
+            redraw_recents_damage(
+                shell,
+                &attributes,
+                &layout,
+                card_x + (offset < 0 ? offset : 0) - 3,
+                card_y - 3,
+                layout.card_width + abs(offset) + 6,
+                layout.card_height + 6
+            );
             close_task(shell, (size_t)pressed);
         } else if (shell->recents_horizontal_drag != 0 && pressed >= 0) {
             int card_x;
@@ -4466,12 +4581,15 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             shell->recents_drag_offset = 0;
             shell->recents_horizontal_drag = 0;
             shell->recents_pressed = -1;
-            begin_clip(
-                shell, card_x + (offset < 0 ? offset : 0) - 3, card_y - 3,
-                layout.card_width + abs(offset) + 6, layout.card_height + 6
+            redraw_recents_damage(
+                shell,
+                &attributes,
+                &layout,
+                card_x + (offset < 0 ? offset : 0) - 3,
+                card_y - 3,
+                layout.card_width + abs(offset) + 6,
+                layout.card_height + 6
             );
-            draw_recents(shell);
-            end_clip(shell);
         } else if (shell->recents_dragging != 0) {
             redraw_recents_viewport(shell, &attributes, &layout);
         } else if (pressed >= 0 && (size_t)pressed < shell->task_count) {

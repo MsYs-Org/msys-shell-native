@@ -18,8 +18,9 @@ One supervised component creates several independently identified X11 windows:
 - gesture pill, or three-button navigation with
   `MSYS_NATIVE_NAV_MODE=buttons`;
 - responsive Recents backed by the selected window manager's real application
-  inventory, optional bounded PPM screenshots, card activation, close buttons,
-  horizontal dismiss, and vertical scrolling;
+  inventory, a two-card mobile screenshot row, bounded PPM screenshots with
+  low-memory antialiased scaling, card activation, close buttons, horizontal
+  dismiss, and vertical scrolling;
 - bounded notification toast whose deadline cannot be extended by an event burst;
 - finite, damage-clipped interaction pulses for launcher cells, Recents cards,
   and the navigation pill (there is no continuous animation timer).
@@ -62,8 +63,8 @@ stable window ID for external windows). Visible tasks precede minimized and
 hidden tasks while window-manager order remains stable inside each state. A
 terminal `closed`/`failed` lifecycle event refreshes a visible Overview through
 one coalesced request. Closing a card follows the same path, clamps the scroll
-offset after reflow, and damages only the task viewport rather than the system
-bars.
+offset after reflow, and clears the union of old/new card pixels inside the
+task viewport rather than damaging the system bars.
 
 `get_preferences` and its `status` alias return the versioned launcher
 preference state. `set_preferences` strictly merges one or more bounded fields,

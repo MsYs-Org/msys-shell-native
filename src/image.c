@@ -137,6 +137,139 @@ static unsigned long channel_pixel(unsigned int channel, unsigned long mask)
     return (((unsigned long)channel * maximum + 127u) / 255u << shift) & mask;
 }
 
+typedef struct sample_axis {
+    int first;
+    int last;
+    uint64_t denominator;
+    uint64_t interval_start;
+    uint64_t interval_end;
+    uint64_t source_step;
+    int linear;
+} sample_axis;
+
+static int sample_axis_prepare(
+    int source_size,
+    int target_size,
+    int target_position,
+    sample_axis *axis
+)
+{
+    int64_t position;
+    int64_t denominator;
+    if (
+        axis == NULL || source_size < 1 || target_size < 1 ||
+        target_position < 0 || target_position >= target_size
+    ) return 0;
+    memset(axis, 0, sizeof(*axis));
+    if (target_size < source_size) {
+        axis->interval_start = (uint64_t)target_position * (uint64_t)source_size;
+        axis->interval_end = (uint64_t)(target_position + 1) * (uint64_t)source_size;
+        axis->source_step = (uint64_t)target_size;
+        axis->first = (int)(axis->interval_start / axis->source_step);
+        axis->last = (int)((axis->interval_end - 1u) / axis->source_step);
+        if (axis->last >= source_size) axis->last = source_size - 1;
+        axis->denominator = (uint64_t)source_size;
+        return 1;
+    }
+
+    /* Pixel-centre mapping for bilinear magnification. */
+    denominator = (int64_t)target_size * 2;
+    position = ((int64_t)target_position * 2 + 1) * (int64_t)source_size -
+        (int64_t)target_size;
+    axis->linear = 1;
+    axis->denominator = (uint64_t)denominator;
+    if (position <= 0) {
+        axis->first = 0;
+        axis->last = 0;
+        return 1;
+    }
+    if (position >= (int64_t)(source_size - 1) * denominator) {
+        axis->first = source_size - 1;
+        axis->last = axis->first;
+        return 1;
+    }
+    axis->first = (int)(position / denominator);
+    axis->last = axis->first + 1;
+    axis->interval_start = (uint64_t)(position - (int64_t)axis->first * denominator);
+    return 1;
+}
+
+static uint64_t sample_axis_weight(const sample_axis *axis, int source_position)
+{
+    if (axis->first == axis->last) return axis->denominator;
+    if (axis->linear != 0) {
+        return source_position == axis->first
+            ? axis->denominator - axis->interval_start
+            : axis->interval_start;
+    }
+    {
+        uint64_t source_start = (uint64_t)source_position * axis->source_step;
+        uint64_t source_end = source_start + axis->source_step;
+        uint64_t overlap_start = axis->interval_start > source_start
+            ? axis->interval_start : source_start;
+        uint64_t overlap_end = axis->interval_end < source_end
+            ? axis->interval_end : source_end;
+        return overlap_end > overlap_start ? overlap_end - overlap_start : 0u;
+    }
+}
+
+static unsigned char normalized_channel(
+    uint64_t total,
+    uint64_t weight,
+    unsigned int maximum
+)
+{
+    uint64_t divisor = weight * (uint64_t)maximum;
+    uint64_t value = (total * 255u + divisor / 2u) / divisor;
+    return (unsigned char)(value > 255u ? 255u : value);
+}
+
+int msys_native_ppm_sample_resized(
+    const msys_native_ppm *source,
+    int width,
+    int height,
+    int x,
+    int y,
+    unsigned char output[3]
+)
+{
+    sample_axis horizontal;
+    sample_axis vertical;
+    uint64_t totals[3] = {0u, 0u, 0u};
+    uint64_t denominator;
+    int source_x;
+    int source_y;
+    if (
+        source == NULL || source->rgb == NULL || source->width < 1 ||
+        source->height < 1 || source->maximum < 1 || output == NULL ||
+        !sample_axis_prepare(source->width, width, x, &horizontal) ||
+        !sample_axis_prepare(source->height, height, y, &vertical)
+    ) return 0;
+    denominator = horizontal.denominator * vertical.denominator;
+    for (source_y = vertical.first; source_y <= vertical.last; source_y++) {
+        uint64_t weight_y = sample_axis_weight(&vertical, source_y);
+        for (source_x = horizontal.first; source_x <= horizontal.last; source_x++) {
+            uint64_t weight = weight_y * sample_axis_weight(&horizontal, source_x);
+            size_t offset = (
+                (size_t)source_y * (size_t)source->width + (size_t)source_x
+            ) * 3u;
+            totals[0] += (uint64_t)source->rgb[offset] * weight;
+            totals[1] += (uint64_t)source->rgb[offset + 1u] * weight;
+            totals[2] += (uint64_t)source->rgb[offset + 2u] * weight;
+        }
+    }
+    output[0] = normalized_channel(
+        totals[0], denominator, (unsigned int)source->maximum
+    );
+    output[1] = normalized_channel(
+        totals[1], denominator, (unsigned int)source->maximum
+    );
+    output[2] = normalized_channel(
+        totals[2], denominator, (unsigned int)source->maximum
+    );
+    return 1;
+}
+
 XImage *msys_native_ppm_ximage(
     Display *display,
     Visual *visual,
@@ -171,19 +304,18 @@ XImage *msys_native_ppm_ximage(
         return NULL;
     }
     for (y = 0; y < height; y++) {
-        int source_y = y * source->height / height;
         for (x = 0; x < width; x++) {
-            int source_x = x * source->width / width;
-            size_t offset = ((size_t)source_y * (size_t)source->width + (size_t)source_x) * 3u;
-            unsigned int red = (unsigned int)source->rgb[offset] * 255u /
-                (unsigned int)source->maximum;
-            unsigned int green = (unsigned int)source->rgb[offset + 1u] * 255u /
-                (unsigned int)source->maximum;
-            unsigned int blue = (unsigned int)source->rgb[offset + 2u] * 255u /
-                (unsigned int)source->maximum;
-            unsigned long pixel = channel_pixel(red, visual->red_mask) |
-                channel_pixel(green, visual->green_mask) |
-                channel_pixel(blue, visual->blue_mask);
+            unsigned char sample[3];
+            unsigned long pixel;
+            if (!msys_native_ppm_sample_resized(
+                source, width, height, x, y, sample
+            )) {
+                XDestroyImage(target);
+                return NULL;
+            }
+            pixel = channel_pixel(sample[0], visual->red_mask) |
+                channel_pixel(sample[1], visual->green_mask) |
+                channel_pixel(sample[2], visual->blue_mask);
             XPutPixel(target, x, y, pixel);
         }
     }

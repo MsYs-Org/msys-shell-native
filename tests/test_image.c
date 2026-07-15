@@ -24,6 +24,7 @@ int main(void)
     };
     char path[] = "/tmp/msys-native-image-XXXXXX";
     msys_native_ppm image;
+    unsigned char sample[3];
     int descriptor = mkstemp(path);
     CHECK(descriptor >= 0);
     CHECK(write(descriptor, document, sizeof(document)) == (ssize_t)sizeof(document));
@@ -32,6 +33,12 @@ int main(void)
     CHECK(msys_native_ppm_load(path, 1024u, &image));
     CHECK(image.width == 2 && image.height == 1 && image.maximum == 126);
     CHECK(image.rgb[0] == 126 && image.rgb[4] == 126);
+    CHECK(msys_native_ppm_sample_resized(&image, 1, 1, 0, 0, sample));
+    CHECK(sample[0] >= 127 && sample[0] <= 128);
+    CHECK(sample[1] >= 127 && sample[1] <= 128);
+    CHECK(sample[2] == 0);
+    CHECK(msys_native_ppm_sample_resized(&image, 4, 1, 1, 0, sample));
+    CHECK(sample[0] > sample[1] && sample[0] < 255 && sample[1] > 0);
     msys_native_ppm_free(&image);
     CHECK(unlink(path) == 0);
     puts("native shell image tests passed");

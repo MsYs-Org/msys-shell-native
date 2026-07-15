@@ -75,16 +75,17 @@ static int test_adaptive_ui(void)
     );
     CHECK(recents.top == 100);
     CHECK(recents.viewport_height == 324);
-    CHECK(recents.card_width == 292);
+    CHECK(recents.columns == 2);
+    CHECK(recents.card_width == 139);
     CHECK(msys_native_recents_exit_hit(290, 70, 320, 42, 0, recents.top));
     CHECK(!msys_native_recents_exit_hit(290, 30, 320, 42, 0, recents.top));
     CHECK(!msys_native_recents_exit_hit(100, 70, 320, 42, 0, recents.top));
     CHECK(msys_native_recents_close_hit(
-        290, recents.top + recents.preview_height + 4,
+        137, recents.top + recents.preview_height + 4,
         recents.margin, recents.top, &recents
     ));
     CHECK(!msys_native_recents_close_hit(
-        200, recents.top + recents.preview_height + 4,
+        60, recents.top + recents.preview_height + 4,
         recents.margin, recents.top, &recents
     ));
     return 0;
