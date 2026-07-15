@@ -14,6 +14,8 @@ int main(void)
 {
     msys_native_app apps[MSYS_NATIVE_MAX_APPS];
     msys_native_task tasks[MSYS_NATIVE_MAX_TASKS];
+    msys_native_process processes[MSYS_NATIVE_MAX_PROCESSES];
+    msys_native_process_metadata process_metadata;
     size_t count = 0u;
     size_t app_count = 0u;
     char escaped[64];
@@ -85,6 +87,52 @@ int main(void)
     CHECK(!tasks[1].pss_available);
     CHECK(!tasks[3].rss_available);
     CHECK(!msys_native_apply_task_resources("{\"windows\":{}}", tasks, count));
+    CHECK(msys_native_parse_processes(
+        "{\"schema\":\"msys.process-list.v1\",\"processes\":["
+        "{\"pid\":10,\"ppid\":1,\"uid\":0,\"name\":\"msysd\","
+        "\"state\":\"running\",\"rss_kib\":4096,\"source\":\"msys\","
+        "\"msys_owned\":true,\"component\":\"org.msys.core:msysd\","
+        "\"component_state\":\"ready\",\"runtime\":\"native\","
+        "\"lifecycle\":\"background\",\"generation\":3},"
+        "{\"pid\":22,\"ppid\":1,\"uid\":1000,\"name\":\"worker\","
+        "\"state\":\"sleeping\",\"rss_kib\":null,\"source\":\"system\","
+        "\"msys_owned\":false,\"component\":null,\"component_state\":null,"
+        "\"runtime\":null,\"lifecycle\":null,\"generation\":null}],"
+        "\"managed_count\":1,\"system_count\":1,"
+        "\"managed_truncated\":false,\"system_truncated\":true}",
+        processes,
+        MSYS_NATIVE_MAX_PROCESSES,
+        &count,
+        &process_metadata
+    ));
+    CHECK(count == 2u);
+    CHECK(processes[0].pid == 10u && processes[0].ppid == 1u);
+    CHECK(processes[0].msys_owned && processes[0].rss_kib == 4096u);
+    CHECK(strcmp(processes[0].component, "org.msys.core:msysd") == 0);
+    CHECK(!processes[1].msys_owned && processes[1].component[0] == '\0');
+    CHECK(!processes[1].rss_available && processes[1].rss_kib == 0u);
+    CHECK(process_metadata.managed_count == 1u);
+    CHECK(process_metadata.system_count == 1u);
+    CHECK(!process_metadata.managed_truncated && process_metadata.system_truncated);
+    CHECK(msys_native_parse_processes(
+        "{\"schema\":\"msys.process-list.v1\",\"processes\":["
+        "{\"pid\":10,\"ppid\":1,\"uid\":0,\"name\":\"one\","
+        "\"state\":\"S\",\"rss_kib\":1,\"source\":\"msys\","
+        "\"msys_owned\":true,\"generation\":1},"
+        "{\"pid\":11,\"ppid\":1,\"uid\":0,\"name\":\"two\","
+        "\"state\":\"S\",\"rss_kib\":1,\"source\":\"msys\","
+        "\"msys_owned\":true,\"generation\":1}],"
+        "\"managed_count\":2,\"system_count\":0,"
+        "\"managed_truncated\":false,\"system_truncated\":false}",
+        processes, 1u, &count, &process_metadata
+    ));
+    CHECK(count == 1u && processes[0].pid == 10u);
+    CHECK(!msys_native_parse_processes(
+        "{\"schema\":\"wrong\",\"processes\":[],\"managed_count\":0,"
+        "\"system_count\":0,\"managed_truncated\":false,"
+        "\"system_truncated\":false}",
+        processes, MSYS_NATIVE_MAX_PROCESSES, &count, &process_metadata
+    ));
     CHECK(msys_native_parse_wifi_device(
         "{\"schema\":\"org.msys.hal.manager.v1\",\"devices\":["
         "{\"id\":\"network:eth0\",\"domain\":\"network\",\"available\":true,"

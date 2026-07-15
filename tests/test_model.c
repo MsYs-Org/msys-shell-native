@@ -70,6 +70,7 @@ static int test_adaptive_ui(void)
 {
     msys_native_grid_layout grid;
     msys_native_recents_layout recents;
+    msys_native_process_layout processes;
     size_t index = 99u;
     CHECK(msys_native_profile_resolve("profile", "mobile", 320, 480) == MSYS_NATIVE_PROFILE_MOBILE);
     CHECK(msys_native_profile_resolve("embedded", "desktop", 1280, 720) == MSYS_NATIVE_PROFILE_EMBEDDED);
@@ -113,6 +114,13 @@ static int test_adaptive_ui(void)
     CHECK(msys_native_recents_exit_hit(290, 70, 320, 42, 0, recents.top));
     CHECK(!msys_native_recents_exit_hit(290, 30, 320, 42, 0, recents.top));
     CHECK(!msys_native_recents_exit_hit(100, 70, 320, 42, 0, recents.top));
+    CHECK(msys_native_recents_process_hit(180, 70, 320, 42, 0, recents.top));
+    CHECK(!msys_native_recents_process_hit(240, 70, 320, 42, 0, recents.top));
+    CHECK(!msys_native_recents_process_hit(180, 30, 320, 42, 0, recents.top));
+    CHECK(!(
+        msys_native_recents_process_hit(232, 70, 320, 42, 0, recents.top) &&
+        msys_native_recents_exit_hit(232, 70, 320, 42, 0, recents.top)
+    ));
     CHECK(msys_native_recents_close_hit(
         137, recents.top + recents.preview_height + 4,
         recents.margin, recents.top, &recents
@@ -120,6 +128,34 @@ static int test_adaptive_ui(void)
     CHECK(!msys_native_recents_close_hit(
         60, recents.top + recents.preview_height + 4,
         recents.margin, recents.top, &recents
+    ));
+    msys_native_process_compute(
+        &processes, 320, 480, recents.top, 0, 42, 20u
+    );
+    CHECK(processes.checkbox_y == recents.top);
+    CHECK(processes.rows_top > processes.checkbox_y);
+    CHECK(processes.viewport_height > 0);
+    CHECK(processes.content_height > processes.viewport_height);
+    CHECK(msys_native_process_checkbox_hit(
+        24, processes.checkbox_y + 10, 320, 0, &processes
+    ));
+    CHECK(!msys_native_process_checkbox_hit(
+        24, processes.rows_top + 10, 320, 0, &processes
+    ));
+    CHECK(msys_native_process_row_hit(
+        24, processes.rows_top + 4, 320, 0, 0,
+        &processes, 20u, &index
+    ));
+    CHECK(index == 0u);
+    CHECK(msys_native_process_row_hit(
+        24, processes.rows_top + 4, 320, 0,
+        processes.row_height + processes.gap,
+        &processes, 20u, &index
+    ));
+    CHECK(index == 1u);
+    CHECK(!msys_native_process_row_hit(
+        2, processes.rows_top + 4, 320, 0, 0,
+        &processes, 20u, &index
     ));
     return 0;
 }

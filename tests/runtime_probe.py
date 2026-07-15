@@ -1358,6 +1358,133 @@ def main() -> int:
             if not wait_window_viewable("MSYS Recents"):
                 raise RuntimeError("Overview did not map before its Exit action")
             exit_width, _exit_height = window_geometry("MSYS Recents")
+            process_x = exit_width - 140
+            process_rows = [
+                {
+                    "pid": 300 + index,
+                    "ppid": 1,
+                    "uid": 0 if index < 4 else 1000,
+                    "name": f"{'msys' if index < 4 else 'system'}-{index}",
+                    "state": "sleeping" if index % 2 else "running",
+                    "rss_kib": 1024 + index * 128,
+                    "source": "msys" if index < 4 else "system",
+                    "msys_owned": index < 4,
+                    "component": f"org.example.worker{index}:main" if index < 4 else None,
+                    "component_state": "ready" if index < 4 else None,
+                    "runtime": "native" if index < 4 else None,
+                    "lifecycle": "background" if index < 4 else None,
+                    "generation": 1 if index < 4 else 0,
+                }
+                for index in range(12)
+            ]
+
+            # The header action enters the read-only process page and requests
+            # exactly the default MSYS-only snapshot.
+            debug_input(
+                "--debug-click-identity",
+                "org.msys.shell.task-switcher",
+                str(process_x),
+                "30",
+            )
+            process_request = wait_for(
+                parent, outbound_call("msys.core", "list_processes")
+            )
+            if process_request.get("payload") != {
+                "include_system": False,
+                "limit": 64,
+            }:
+                raise RuntimeError(f"wrong default process request: {process_request}")
+            reply(parent, process_request, {
+                "schema": "msys.process-list.v1",
+                "processes": process_rows[:4],
+                "managed_count": 4,
+                "system_count": 0,
+                "managed_truncated": False,
+                "system_truncated": False,
+            })
+            time.sleep(0.08)
+            if not window_is_viewable("MSYS Recents"):
+                raise RuntimeError("process page did not remain visible")
+
+            # Rows are intentionally read-only: tapping one neither exits the
+            # page nor sends stop/start calls.
+            debug_input(
+                "--debug-click-identity",
+                "org.msys.shell.task-switcher",
+                "80",
+                "140",
+            )
+            if not window_is_viewable("MSYS Recents"):
+                raise RuntimeError("process row click dismissed the page")
+            assert_no_outbound_call(parent, "msys.core", "stop")
+            debug_input(
+                "--debug-click-identity",
+                "org.msys.shell.task-switcher",
+                "5",
+                "200",
+            )
+            if not window_is_viewable("MSYS Recents"):
+                raise RuntimeError("process page blank click dismissed the page")
+            assert_no_outbound_call(parent, "msys.core", "stop")
+
+            # Checkbox reloads once with system processes included.
+            debug_input(
+                "--debug-click-identity",
+                "org.msys.shell.task-switcher",
+                "30",
+                "80",
+            )
+            system_process_request = wait_for(
+                parent, outbound_call("msys.core", "list_processes")
+            )
+            if system_process_request.get("payload") != {
+                "include_system": True,
+                "limit": 64,
+            }:
+                raise RuntimeError(
+                    f"wrong system-process request: {system_process_request}"
+                )
+            reply(parent, system_process_request, {
+                "schema": "msys.process-list.v1",
+                "processes": process_rows,
+                "managed_count": 4,
+                "system_count": 8,
+                "managed_truncated": False,
+                "system_truncated": False,
+            })
+            time.sleep(0.08)
+            assert_no_outbound_call(parent, "msys.core", "list_processes")
+
+            # A long list follows the held pointer before release, using the
+            # same bounded live-frame scheduler as normal Recents.
+            process_idle = window_pixel_digest("MSYS Recents")
+            chrome_x, chrome_y, chrome_width, chrome_height = window_frame(
+                "MSYS Chrome"
+            )
+            process_midpoint = debug_cross_surface_swipe(
+                "MSYS Recents",
+                exit_width // 2,
+                min(300, _exit_height - 30),
+                chrome_x + chrome_width // 2,
+                chrome_y + chrome_height // 2,
+                capture_midpoint=True,
+            )
+            if process_midpoint is None or process_midpoint == process_idle:
+                raise RuntimeError("process list did not follow drag before release")
+            if not window_is_viewable("MSYS Recents"):
+                raise RuntimeError("process list drag dismissed the page")
+
+            # Header action returns to task cards without another process RPC.
+            debug_input(
+                "--debug-click-identity",
+                "org.msys.shell.task-switcher",
+                str(process_x),
+                "30",
+            )
+            assert_no_outbound_call(parent, "msys.core", "list_processes")
+            if not window_is_viewable("MSYS Recents"):
+                raise RuntimeError("returning from process page dismissed Overview")
+
             # Approximate a touch/grab race where the release is selected on
             # the navigation surface.  It must cancel the Exit press and clear
             # its feedback even though event.window is no longer Recents.

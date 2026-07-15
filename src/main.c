@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.19"
+#define APP_VERSION "0.3.20"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8
@@ -42,7 +42,7 @@
 #define TOAST_MAX_WIDTH 420
 #define IMAGE_FILE_LIMIT (4u * 1024u * 1024u)
 #define MAX_PENDING_CALLS 16u
-#define RESPONSE_CAPACITY (16u * 1024u)
+#define RESPONSE_CAPACITY (64u * 1024u)
 #define CONTROL_ROW_COUNT 4
 #define AUDIO_CONTROL_ROW 2
 #define AUDIO_STATE_TIMEOUT_MS 12000u
@@ -65,6 +65,7 @@ enum pending_kind {
     PENDING_APP_START,
     PENDING_RECENTS_LIST,
     PENDING_RECENTS_RESOURCES,
+    PENDING_PROCESS_LIST,
     PENDING_TASK_ACTIVATE,
     PENDING_TASK_CLOSE,
     PENDING_NAVIGATION,
@@ -260,6 +261,17 @@ typedef struct native_shell {
     size_t task_count;
     enum catalog_state tasks_state;
     char tasks_message[192];
+    msys_native_process processes[MSYS_NATIVE_MAX_PROCESSES];
+    size_t process_count;
+    msys_native_process_metadata process_metadata;
+    enum catalog_state processes_state;
+    char processes_message[192];
+    int process_view;
+    int process_include_system;
+    int process_scroll;
+    int process_presented_scroll;
+    int process_redraw_pending;
+    uint64_t process_redraw_at_ms;
     int apps_refresh_queued;
     int tasks_refresh_queued;
     enum msys_native_shell_profile profile;
@@ -331,6 +343,7 @@ static volatile sig_atomic_t stop_requested = 0;
 static void request_apps(native_shell *shell);
 static void request_recents(native_shell *shell);
 static void request_recents_resources(native_shell *shell);
+static void request_processes(native_shell *shell);
 static void activate_app(native_shell *shell, size_t index);
 static void activate_task(native_shell *shell, size_t index);
 static void close_task(native_shell *shell, size_t index);
@@ -344,7 +357,13 @@ static void redraw_recents_viewport(
     const XWindowAttributes *attributes,
     const msys_native_recents_layout *layout
 );
+static int present_process_drag_frame(
+    native_shell *shell,
+    uint64_t current,
+    int force
+);
 static void redraw_controls_row(native_shell *shell, int index);
+static void redraw_process_content(native_shell *shell);
 static void request_wifi_inventory(native_shell *shell);
 static void request_audio_state(native_shell *shell);
 static const char *tr(native_shell *shell, const char *key);
@@ -2163,6 +2182,221 @@ static void draw_task_card(
     XDrawLine(shell->display, shell->recents, shell->gc, x + layout->card_width - 19, title_y - 12, x + layout->card_width - 31, title_y);
 }
 
+static void process_layout(
+    native_shell *shell,
+    int width,
+    int height,
+    msys_native_process_layout *layout,
+    int *right_inset
+)
+{
+    msys_native_recents_layout recents;
+    int top = 0;
+    int right = 0;
+    int bottom = 0;
+    recents_layout(shell, width, height, &recents);
+    recents_surface_insets(shell, width, height, &top, &right, &bottom);
+    msys_native_process_compute(
+        layout,
+        width,
+        height,
+        recents.top,
+        right,
+        bottom,
+        shell->process_count
+    );
+    shell->process_scroll = msys_native_scroll_clamp(
+        shell->process_scroll,
+        layout->content_height,
+        layout->viewport_height
+    );
+    if (right_inset != NULL) *right_inset = right;
+    (void)top;
+}
+
+static void draw_process_row(
+    native_shell *shell,
+    const msys_native_process_layout *layout,
+    int width,
+    int right,
+    size_t index
+)
+{
+    const msys_native_process *process = &shell->processes[index];
+    int x = layout->margin;
+    int y = layout->rows_top +
+        (int)index * (layout->row_height + layout->gap) - shell->process_scroll;
+    int row_width = width - right - layout->margin * 2;
+    char detail[160];
+    const char *state = process->state[0] != '\0' ? process->state : "-";
+    if (
+        y + layout->row_height < layout->rows_top ||
+        y > layout->rows_top + layout->viewport_height || row_width < 1
+    ) return;
+    fill_rounded(
+        shell,
+        shell->recents,
+        x,
+        y,
+        (unsigned int)row_width,
+        (unsigned int)layout->row_height,
+        12u,
+        shell->surface
+    );
+    set_foreground(shell, process->msys_owned != 0 ? shell->accent : shell->muted);
+    XFillRectangle(
+        shell->display,
+        shell->recents,
+        shell->gc,
+        x,
+        y + 8,
+        3u,
+        (unsigned int)(layout->row_height - 16)
+    );
+    draw_text_ellipsized(
+        shell,
+        shell->recents,
+        x + 12,
+        y + 19,
+        row_width - 24,
+        process->name,
+        shell->foreground
+    );
+    if (process->rss_available != 0) {
+        (void)snprintf(
+            detail,
+            sizeof(detail),
+            "PID %llu  %s  %lluK",
+            (unsigned long long)process->pid,
+            state,
+            (unsigned long long)process->rss_kib
+        );
+    } else {
+        (void)snprintf(
+            detail,
+            sizeof(detail),
+            "PID %llu  %s  RSS --",
+            (unsigned long long)process->pid,
+            state
+        );
+    }
+    draw_text_ellipsized(
+        shell,
+        shell->recents,
+        x + 12,
+        y + 39,
+        row_width - 24,
+        detail,
+        shell->muted
+    );
+}
+
+static void draw_process_content(native_shell *shell)
+{
+    XWindowAttributes attributes;
+    msys_native_process_layout layout;
+    size_t index;
+    int right = 0;
+    int box_x;
+    int box_y;
+    int previous_clip_active;
+    XRectangle previous_clip;
+    if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) return;
+    process_layout(
+        shell, attributes.width, attributes.height, &layout, &right
+    );
+    if (shell->recents_pressed == -4) {
+        fill_rounded(
+            shell,
+            shell->recents,
+            layout.margin,
+            layout.checkbox_y + 2,
+            (unsigned int)(attributes.width - right - layout.margin * 2),
+            (unsigned int)(layout.checkbox_height - 4),
+            12u,
+            shell->surface
+        );
+    }
+    box_x = layout.margin + 6;
+    box_y = layout.checkbox_y + (layout.checkbox_height - 20) / 2;
+    set_foreground(shell, shell->process_include_system != 0 ? shell->accent : shell->muted);
+    XDrawRectangle(
+        shell->display, shell->recents, shell->gc,
+        box_x, box_y, 19u, 19u
+    );
+    if (shell->process_include_system != 0) {
+        XSetLineAttributes(shell->display, shell->gc, 2u, LineSolid, CapRound, JoinRound);
+        XDrawLine(
+            shell->display, shell->recents, shell->gc,
+            box_x + 4, box_y + 10, box_x + 8, box_y + 15
+        );
+        XDrawLine(
+            shell->display, shell->recents, shell->gc,
+            box_x + 8, box_y + 15, box_x + 16, box_y + 5
+        );
+        XSetLineAttributes(shell->display, shell->gc, 1u, LineSolid, CapButt, JoinMiter);
+    }
+    draw_text_ellipsized(
+        shell,
+        shell->recents,
+        box_x + 30,
+        layout.checkbox_y + 29,
+        attributes.width - right - box_x - 38,
+        tr(shell, "process.show_system"),
+        shell->foreground
+    );
+    if (shell->processes_state == CATALOG_LOADING) {
+        draw_text(
+            shell, shell->recents, layout.margin, layout.rows_top + 24,
+            tr(shell, "process.loading"), shell->muted
+        );
+        return;
+    }
+    if (shell->processes_state == CATALOG_ERROR) {
+        draw_text(
+            shell, shell->recents, layout.margin, layout.rows_top + 24,
+            tr(shell, "process.unavailable"), shell->foreground
+        );
+        draw_text_ellipsized(
+            shell, shell->recents, layout.margin, layout.rows_top + 50,
+            attributes.width - right - layout.margin * 2,
+            shell->processes_message, shell->muted
+        );
+        return;
+    }
+    if (shell->process_count == 0u) {
+        draw_text(
+            shell, shell->recents, layout.margin, layout.rows_top + 24,
+            tr(shell, "process.empty"), shell->muted
+        );
+        return;
+    }
+    if (begin_clip_intersection(
+        shell,
+        0,
+        layout.rows_top,
+        attributes.width - right,
+        layout.viewport_height,
+        &previous_clip_active,
+        &previous_clip
+    )) {
+        for (index = 0u; index < shell->process_count; index++) {
+            draw_process_row(shell, &layout, attributes.width, right, index);
+        }
+        draw_scroll_indicator(
+            shell,
+            shell->recents,
+            attributes.width - right - 8,
+            layout.rows_top,
+            layout.viewport_height,
+            layout.content_height,
+            layout.viewport_height,
+            shell->process_scroll
+        );
+        restore_clip(shell, previous_clip_active, &previous_clip);
+    }
+}
+
 static void draw_recents(native_shell *shell)
 {
     XWindowAttributes attributes;
@@ -2172,6 +2406,7 @@ static void draw_recents(native_shell *shell)
     int right;
     int bottom;
     int accent_width;
+    int process_action_x;
     int previous_clip_active;
     XRectangle previous_clip;
     if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) return;
@@ -2184,7 +2419,14 @@ static void draw_recents(native_shell *shell)
         shell->display, shell->recents, shell->gc, 0, 0,
         (unsigned int)attributes.width, (unsigned int)attributes.height
     );
-    draw_text(shell, shell->recents, layout.margin, top + 37, tr(shell, "recents.title"), shell->foreground);
+    draw_text(
+        shell,
+        shell->recents,
+        layout.margin,
+        top + 37,
+        tr(shell, shell->process_view != 0 ? "process.title" : "recents.title"),
+        shell->foreground
+    );
     if (shell->recents_pressed == -2) {
         fill_rounded(
             shell,
@@ -2197,11 +2439,38 @@ static void draw_recents(native_shell *shell)
             shell->surface
         );
     }
+    process_action_x = attributes.width - right - 196;
+    if (shell->recents_pressed == -3 || shell->process_view != 0) {
+        fill_rounded(
+            shell,
+            shell->recents,
+            process_action_x + 4,
+            top + 7,
+            96u,
+            36u,
+            18u,
+            shell->surface
+        );
+    }
+    draw_text_centered_in_rect(
+        shell,
+        shell->recents,
+        process_action_x,
+        top,
+        104,
+        layout.top - top,
+        tr(shell, shell->process_view != 0 ? "process.back_to_tasks" : "process.title"),
+        shell->accent
+    );
     draw_text(shell, shell->recents, attributes.width - right - 58, top + 37, tr(shell, "recents.exit"), shell->accent);
     accent_width = (int)((shell->overview_accent_until_ms > now_ms()
         ? shell->overview_accent_until_ms - now_ms() : 0u) * 96u / OVERVIEW_ACCENT_MS);
     if (accent_width > 96) accent_width = 96;
     fill_rounded(shell, shell->recents, layout.margin, top + 45, (unsigned int)(96 - accent_width), 4u, 2u, shell->accent);
+    if (shell->process_view != 0) {
+        draw_process_content(shell);
+        return;
+    }
     if (shell->tasks_state == CATALOG_LOADING) {
         draw_text(shell, shell->recents, layout.margin, layout.top + 24, tr(shell, "recents.loading"), shell->muted);
         return;
@@ -3036,7 +3305,11 @@ static void show_recents(native_shell *shell)
     hide_launch_transition(shell);
     hide_controls(shell);
     shell->recents_visible = 1;
+    shell->process_view = 0;
+    shell->process_include_system = 0;
     shell->recents_scroll = 0;
+    shell->process_scroll = 0;
+    shell->process_redraw_pending = 0;
     shell->recents_pressed = -1;
     shell->overview_accent_until_ms = now_ms() + OVERVIEW_ACCENT_MS;
     /*
@@ -3508,6 +3781,49 @@ static void request_recents_resources(native_shell *shell)
         3000u,
         1
     );
+}
+
+static void request_processes(native_shell *shell)
+{
+    char payload[64];
+    shell->processes_state = CATALOG_LOADING;
+    shell->process_count = 0u;
+    shell->process_scroll = 0;
+    shell->process_presented_scroll = 0;
+    shell->process_redraw_pending = 0;
+    shell->process_redraw_at_ms = 0u;
+    shell->processes_message[0] = '\0';
+    (void)snprintf(
+        payload,
+        sizeof(payload),
+        "{\"include_system\":%s,\"limit\":64}",
+        shell->process_include_system != 0 ? "true" : "false"
+    );
+    if (shell->recents_mapped != 0 && shell->process_view != 0) {
+        redraw_process_content(shell);
+    }
+    if (
+        send_async(
+            shell,
+            PENDING_PROCESS_LIST,
+            (size_t)(shell->process_include_system != 0),
+            "msys.core",
+            "list_processes",
+            payload,
+            7000u,
+            1
+        ) == 0u
+    ) {
+        shell->processes_state = CATALOG_ERROR;
+        (void)snprintf(
+            shell->processes_message,
+            sizeof(shell->processes_message),
+            "%s", tr(shell, "error.core_unavailable")
+        );
+        if (shell->recents_mapped != 0 && shell->process_view != 0) {
+            redraw_process_content(shell);
+        }
+    }
 }
 
 static int component_payload(
@@ -4336,6 +4652,19 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
             } else {
                 refresh_recents_presentation(shell);
             }
+        } else if (pending.kind == PENDING_PROCESS_LIST) {
+            if (pending.index == (size_t)(shell->process_include_system != 0)) {
+                shell->processes_state = CATALOG_ERROR;
+                shell->process_count = 0u;
+                packet_error_text(
+                    packet,
+                    shell->processes_message,
+                    sizeof(shell->processes_message)
+                );
+                if (shell->recents_mapped != 0 && shell->process_view != 0) {
+                    redraw_process_content(shell);
+                }
+            }
         } else if (pending.kind == PENDING_APP_START) {
             hide_launch_transition(shell);
             packet_error_text(packet, shell->apps_message, sizeof(shell->apps_message));
@@ -4463,6 +4792,37 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
             request_recents(shell);
         } else {
             refresh_recents_presentation(shell);
+        }
+        break;
+    case PENDING_PROCESS_LIST:
+        if (pending.index != (size_t)(shell->process_include_system != 0)) {
+            break;
+        }
+        if (msys_native_parse_processes(
+            payload,
+            shell->processes,
+            MSYS_NATIVE_MAX_PROCESSES,
+            &shell->process_count,
+            &shell->process_metadata
+        ) == 0) {
+            shell->processes_state = CATALOG_ERROR;
+            shell->process_count = 0u;
+            (void)snprintf(
+                shell->processes_message,
+                sizeof(shell->processes_message),
+                "%s", tr(shell, "process.invalid")
+            );
+        } else {
+            shell->processes_state = shell->process_count == 0u
+                ? CATALOG_EMPTY : CATALOG_READY;
+            shell->processes_message[0] = '\0';
+        }
+        shell->process_scroll = 0;
+        shell->process_presented_scroll = 0;
+        shell->process_redraw_pending = 0;
+        shell->process_redraw_at_ms = 0u;
+        if (shell->recents_mapped != 0 && shell->process_view != 0) {
+            redraw_process_content(shell);
         }
         break;
     case PENDING_TASK_ACTIVATE:
@@ -4870,6 +5230,87 @@ static int present_recents_drag_frame(
     return 1;
 }
 
+static void redraw_process_content(native_shell *shell)
+{
+    XWindowAttributes attributes;
+    msys_native_process_layout layout;
+    int right = 0;
+    if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) return;
+    process_layout(
+        shell, attributes.width, attributes.height, &layout, &right
+    );
+    begin_clip(
+        shell,
+        0,
+        layout.checkbox_y,
+        attributes.width - right,
+        layout.rows_top + layout.viewport_height - layout.checkbox_y
+    );
+    draw_recents(shell);
+    end_clip(shell);
+}
+
+static int present_process_drag_frame(
+    native_shell *shell,
+    uint64_t current,
+    int force
+)
+{
+    XWindowAttributes attributes;
+    msys_native_process_layout layout;
+    int right = 0;
+    if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) return 0;
+    process_layout(
+        shell, attributes.width, attributes.height, &layout, &right
+    );
+    if (!msys_native_drag_frame_due(
+        shell->process_scroll,
+        shell->process_presented_scroll,
+        current,
+        shell->process_redraw_at_ms,
+        force
+    )) return 0;
+    begin_atomic_presentation(shell);
+    begin_clip(
+        shell,
+        0,
+        layout.rows_top,
+        attributes.width - right,
+        layout.viewport_height
+    );
+    draw_recents(shell);
+    end_clip(shell);
+    end_atomic_presentation(shell);
+    shell->process_presented_scroll = shell->process_scroll;
+    shell->process_redraw_pending = 0;
+    shell->process_redraw_at_ms = current + DRAG_FRAME_MS;
+    return 1;
+}
+
+static void redraw_recents_header_actions(native_shell *shell)
+{
+    XWindowAttributes attributes;
+    msys_native_recents_layout layout;
+    int top = 0;
+    int right = 0;
+    int bottom = 0;
+    if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) return;
+    recents_layout(shell, attributes.width, attributes.height, &layout);
+    recents_surface_insets(
+        shell, attributes.width, attributes.height, &top, &right, &bottom
+    );
+    begin_clip(
+        shell,
+        attributes.width - right - 202,
+        top,
+        202,
+        layout.top - top
+    );
+    draw_recents(shell);
+    end_clip(shell);
+    (void)bottom;
+}
+
 static void redraw_recents_exit_damage(native_shell *shell)
 {
     XWindowAttributes attributes;
@@ -5236,6 +5677,7 @@ static void handle_x_event(native_shell *shell, XEvent *event)
     } else if (event->type == ButtonPress && event->xbutton.window == shell->recents) {
         XWindowAttributes attributes;
         msys_native_recents_layout layout;
+        msys_native_process_layout process_list_layout;
         size_t index;
         int card_x;
         int card_y;
@@ -5255,10 +5697,24 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         shell->recents_close_pressed = 0;
         shell->recents_drag_start_x = event->xbutton.x;
         shell->recents_drag_start_y = event->xbutton.y;
-        shell->recents_drag_start_scroll = shell->recents_scroll;
-        shell->recents_presented_scroll = shell->recents_scroll;
-        shell->recents_redraw_pending = 0;
-        shell->recents_redraw_at_ms = 0u;
+        if (shell->process_view != 0) {
+            process_layout(
+                shell,
+                attributes.width,
+                attributes.height,
+                &process_list_layout,
+                NULL
+            );
+            shell->recents_drag_start_scroll = shell->process_scroll;
+            shell->process_presented_scroll = shell->process_scroll;
+            shell->process_redraw_pending = 0;
+            shell->process_redraw_at_ms = 0u;
+        } else {
+            shell->recents_drag_start_scroll = shell->recents_scroll;
+            shell->recents_presented_scroll = shell->recents_scroll;
+            shell->recents_redraw_pending = 0;
+            shell->recents_redraw_at_ms = 0u;
+        }
         (void)XGrabPointer(
             shell->display,
             shell->recents,
@@ -5279,7 +5735,43 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             layout.top
         )) {
             shell->recents_pressed = -2;
-        } else if (msys_native_recents_hit(
+        } else if (msys_native_recents_process_hit(
+            event->xbutton.x,
+            event->xbutton.y,
+            attributes.width,
+            top,
+            right,
+            layout.top
+        )) {
+            shell->recents_pressed = -3;
+        } else if (
+            shell->process_view != 0 &&
+            msys_native_process_checkbox_hit(
+                event->xbutton.x,
+                event->xbutton.y,
+                attributes.width,
+                right,
+                &process_list_layout
+            )
+        ) {
+            shell->recents_pressed = -4;
+        } else if (
+            shell->process_view != 0 &&
+            msys_native_process_row_hit(
+                event->xbutton.x,
+                event->xbutton.y,
+                attributes.width,
+                right,
+                shell->process_scroll,
+                &process_list_layout,
+                shell->process_count,
+                &index
+            )
+        ) {
+            /* Process rows are deliberately read-only.  Retain an explicit
+             * hit state so their release can never fall through to Exit. */
+            shell->recents_pressed = -5;
+        } else if (shell->process_view == 0 && msys_native_recents_hit(
             event->xbutton.x,
             event->xbutton.y,
             shell->recents_scroll,
@@ -5307,6 +5799,10 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             );
             draw_recents(shell);
             end_clip(shell);
+        } else if (shell->recents_pressed == -3) {
+            redraw_recents_header_actions(shell);
+        } else if (shell->recents_pressed == -4) {
+            redraw_process_content(shell);
         } else if (shell->recents_pressed >= 0) {
             redraw_recents_card(shell, (size_t)shell->recents_pressed);
         }
@@ -5321,7 +5817,39 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         int delta_y = event->xmotion.y - shell->recents_drag_start_y;
         if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) return;
         recents_layout(shell, attributes.width, attributes.height, &layout);
-        if (
+        if (shell->process_view != 0 && abs(delta_y) > 8) {
+            msys_native_process_layout process_list_layout;
+            int old_pressed = shell->recents_pressed;
+            int starting_drag = shell->recents_dragging == 0;
+            int new_scroll;
+            process_layout(
+                shell,
+                attributes.width,
+                attributes.height,
+                &process_list_layout,
+                NULL
+            );
+            new_scroll = msys_native_scroll_clamp(
+                shell->recents_drag_start_scroll - delta_y,
+                process_list_layout.content_height,
+                process_list_layout.viewport_height
+            );
+            shell->recents_dragging = 1;
+            shell->recents_pressed = -1;
+            if (starting_drag != 0) {
+                if (old_pressed == -2 || old_pressed == -3) {
+                    redraw_recents_header_actions(shell);
+                } else if (old_pressed == -4) {
+                    redraw_process_content(shell);
+                }
+            }
+            shell->process_scroll = new_scroll;
+            if (new_scroll == shell->process_presented_scroll) {
+                shell->process_redraw_pending = 0;
+            } else if (present_process_drag_frame(shell, current, 0) == 0) {
+                shell->process_redraw_pending = 1;
+            }
+        } else if (shell->process_view == 0 &&
             shell->recents_pressed >= 0 && abs(delta_x) > abs(delta_y) + 6 &&
             abs(delta_x) > 8
         ) {
@@ -5345,7 +5873,10 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                 shell, &attributes, &layout,
                 left, card_y - 3, width, layout.card_height + 6
             );
-        } else if (shell->recents_horizontal_drag == 0 && abs(delta_y) > 8) {
+        } else if (
+            shell->process_view == 0 &&
+            shell->recents_horizontal_drag == 0 && abs(delta_y) > 8
+        ) {
             int old_pressed = shell->recents_pressed;
             int starting_drag = shell->recents_dragging == 0;
             int new_scroll = msys_native_scroll_clamp(
@@ -5361,6 +5892,8 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                  * location once; content itself stays still during motion. */
                 if (old_pressed == -2) {
                     redraw_recents_exit_damage(shell);
+                } else if (old_pressed == -3) {
+                    redraw_recents_header_actions(shell);
                 } else if (old_pressed >= 0) {
                     redraw_recents_card(shell, (size_t)old_pressed);
                 }
@@ -5377,6 +5910,7 @@ static void handle_x_event(native_shell *shell, XEvent *event)
     ) {
         XWindowAttributes attributes;
         msys_native_recents_layout layout;
+        msys_native_process_layout process_list_layout;
         int pressed = shell->recents_pressed;
         int top = 0;
         int right = 0;
@@ -5385,6 +5919,8 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         int local_y = -1;
         int translated;
         int exit_released;
+        int process_released;
+        int checkbox_released = 0;
         int same_card = 0;
         int close_released = 0;
         size_t released_index = 0u;
@@ -5435,7 +5971,34 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             right,
             layout.top
         );
-        if (pressed >= 0 && (size_t)pressed < shell->task_count) {
+        process_released = msys_native_recents_process_hit(
+            local_x,
+            local_y,
+            attributes.width,
+            top,
+            right,
+            layout.top
+        );
+        if (shell->process_view != 0) {
+            process_layout(
+                shell,
+                attributes.width,
+                attributes.height,
+                &process_list_layout,
+                NULL
+            );
+            checkbox_released = msys_native_process_checkbox_hit(
+                local_x,
+                local_y,
+                attributes.width,
+                right,
+                &process_list_layout
+            );
+        }
+        if (
+            shell->process_view == 0 &&
+            pressed >= 0 && (size_t)pressed < shell->task_count
+        ) {
             int card_x;
             int card_y;
             same_card = msys_native_recents_hit(
@@ -5462,7 +6025,37 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                 hide_recents(shell, 1);
             } else {
                 shell->recents_pressed = -1;
+                redraw_recents_header_actions(shell);
+            }
+        } else if (pressed == -3) {
+            if (shell->recents_dragging == 0 && process_released != 0) {
+                shell->recents_pressed = -1;
+                shell->process_view = shell->process_view == 0 ? 1 : 0;
+                shell->recents_dragging = 0;
+                shell->recents_horizontal_drag = 0;
+                shell->recents_drag_offset = 0;
                 draw_recents(shell);
+                if (shell->process_view != 0) {
+                    request_processes(shell);
+                }
+            } else {
+                shell->recents_pressed = -1;
+                redraw_recents_header_actions(shell);
+            }
+        } else if (shell->process_view != 0) {
+            if (shell->recents_dragging != 0) {
+                if (shell->process_scroll != shell->process_presented_scroll) {
+                    (void)present_process_drag_frame(shell, current, 1);
+                }
+            } else if (pressed == -4) {
+                shell->recents_pressed = -1;
+                if (checkbox_released != 0) {
+                    shell->process_include_system =
+                        shell->process_include_system == 0 ? 1 : 0;
+                    request_processes(shell);
+                } else {
+                    redraw_process_content(shell);
+                }
             }
         } else if (
             shell->recents_horizontal_drag != 0 && pressed >= 0 &&
@@ -5515,6 +6108,9 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         shell->recents_presented_scroll = shell->recents_scroll;
         shell->recents_redraw_pending = 0;
         shell->recents_redraw_at_ms = 0u;
+        shell->process_presented_scroll = shell->process_scroll;
+        shell->process_redraw_pending = 0;
+        shell->process_redraw_at_ms = 0u;
         shell->recents_pressed = -1;
         shell->recents_close_pressed = 0;
     } else if (event->type == ButtonRelease && event->xbutton.window == shell->toast) {
@@ -5738,8 +6334,17 @@ static void periodic(native_shell *shell)
     }
     if (
         shell->recents_pointer_active != 0 &&
+        shell->process_view == 0 &&
         shell->recents_redraw_pending != 0 &&
         present_recents_drag_frame(shell, current, 0) != 0
+    ) {
+        visual_change = 1;
+    }
+    if (
+        shell->recents_pointer_active != 0 &&
+        shell->process_view != 0 &&
+        shell->process_redraw_pending != 0 &&
+        present_process_drag_frame(shell, current, 0) != 0
     ) {
         visual_change = 1;
     }
@@ -5897,6 +6502,20 @@ static void periodic(native_shell *shell)
             } else {
                 refresh_recents_presentation(shell);
                 if (shell->recents_visible != 0) visual_change = 1;
+            }
+        } else if (expired.kind == PENDING_PROCESS_LIST) {
+            if (expired.index == (size_t)(shell->process_include_system != 0)) {
+                shell->processes_state = CATALOG_ERROR;
+                shell->process_count = 0u;
+                (void)snprintf(
+                    shell->processes_message,
+                    sizeof(shell->processes_message),
+                    "%s", tr(shell, "error.request_timeout")
+                );
+                if (shell->recents_mapped != 0 && shell->process_view != 0) {
+                    redraw_process_content(shell);
+                    visual_change = 1;
+                }
             }
         } else if (
             expired.kind == PENDING_RECENTS_LIST ||

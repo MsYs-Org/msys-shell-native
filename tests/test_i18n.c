@@ -27,6 +27,11 @@ int main(void)
     CHECK(message != NULL && strcmp(message, "\xe5\xbf\xab\xe6\x8d\xb7\xe6\x8e\xa7\xe5\x88\xb6") == 0);
     message = msys_i18n_lookup(&shell_catalog, "zh-Hans-CN", "controls.audio_muted");
     CHECK(message != NULL && strcmp(message, "\xe5\xb7\xb2\xe9\x9d\x99\xe9\x9f\xb3") == 0);
+    message = msys_i18n_lookup(&shell_catalog, "zh-Hans-CN", "process.title");
+    CHECK(message != NULL && strcmp(
+        message,
+        "\xe5\x90\x8e\xe5\x8f\xb0\xe8\xbf\x9b\xe7\xa8\x8b"
+    ) == 0);
     CHECK(strcmp(msys_i18n_lookup(&shell_catalog, "C", "launcher.title"), "Apps") == 0);
     puts("native shell i18n tests passed");
     return 0;

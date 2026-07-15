@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.19")
+        self.assertEqual(self.document["package"]["version"], "0.3.20")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.19"', implementation)
+        self.assertIn('#define APP_VERSION "0.3.20"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -377,6 +377,30 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("PENDING_AUDIO_STATE", implementation)
         self.assertIn("redraw_controls_row(shell, AUDIO_CONTROL_ROW)", implementation)
         self.assertNotIn("systemctl", implementation.lower())
+
+    def test_background_process_page_is_bounded_read_only_and_on_demand(self) -> None:
+        implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
+        catalog = (ROOT / "src" / "catalog.c").read_text(encoding="utf-8")
+        model = (ROOT / "src" / "model.c").read_text(encoding="utf-8")
+        runtime = (ROOT / "tests" / "runtime_probe.py").read_text(encoding="utf-8")
+        self.assertIn("PENDING_PROCESS_LIST", implementation)
+        self.assertIn('"list_processes"', implementation)
+        self.assertIn(
+            '"{\\\"include_system\\\":%s,\\\"limit\\\":64}"',
+            implementation,
+        )
+        self.assertIn("msys_native_parse_processes", catalog)
+        self.assertIn('"msys.process-list.v1"', catalog)
+        self.assertIn("MSYS_NATIVE_MAX_PROCESSES", catalog)
+        self.assertIn("msys_native_recents_process_hit", model)
+        self.assertIn("msys_native_process_checkbox_hit", model)
+        self.assertIn("msys_native_process_row_hit", model)
+        self.assertIn("present_process_drag_frame", implementation)
+        self.assertIn("process_redraw_pending", implementation)
+        self.assertNotIn('"kill"', implementation)
+        self.assertIn('outbound_call("msys.core", "list_processes")', runtime)
+        self.assertIn("process row click dismissed the page", runtime)
+        self.assertIn("process list did not follow drag before release", runtime)
 
     def test_chrome_wifi_uses_hal_events_and_bounded_icon_damage(self) -> None:
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")

@@ -1,6 +1,13 @@
 # MSYS Native Shell
 
-Current source version: `0.3.19`.
+Current source version: `0.3.20`.
+
+Version 0.3.20 adds a read-only background-process page inside Overview. Its
+header action stays separate from Exit, defaults to supervised non-GUI MSYS
+processes, and optionally includes non-MSYS system processes through one
+explicit checkbox refresh. It never polls or exposes process termination. The
+compact list has independent scrolling and reuses the 80ms atomic live-drag
+scheduler.
 
 Version 0.3.19 makes Launcher and Recents content follow vertical touch drags
 again. The first changed position is immediate, later viewport frames are

@@ -74,6 +74,17 @@ typedef struct msys_native_recents_layout {
     int content_height;
 } msys_native_recents_layout;
 
+typedef struct msys_native_process_layout {
+    int margin;
+    int checkbox_y;
+    int checkbox_height;
+    int rows_top;
+    int row_height;
+    int gap;
+    int viewport_height;
+    int content_height;
+} msys_native_process_layout;
+
 void msys_native_gesture_begin(
     msys_native_gesture *gesture,
     int y,
@@ -167,6 +178,16 @@ void msys_native_recents_compute(
     size_t item_count
 );
 
+void msys_native_process_compute(
+    msys_native_process_layout *layout,
+    int width,
+    int height,
+    int content_top,
+    int right_inset,
+    int bottom_inset,
+    size_t item_count
+);
+
 int msys_native_scroll_clamp(int requested, int content_height, int viewport_height);
 
 /* Decide whether a changed logical drag position may be presented now. */
@@ -204,6 +225,35 @@ int msys_native_recents_exit_hit(
     int top_inset,
     int right_inset,
     int header_bottom
+);
+
+/* Header action immediately left of Exit; the two hit regions never overlap. */
+int msys_native_recents_process_hit(
+    int x,
+    int y,
+    int width,
+    int top_inset,
+    int right_inset,
+    int header_bottom
+);
+
+int msys_native_process_checkbox_hit(
+    int x,
+    int y,
+    int width,
+    int right_inset,
+    const msys_native_process_layout *layout
+);
+
+int msys_native_process_row_hit(
+    int x,
+    int y,
+    int width,
+    int right_inset,
+    int scroll,
+    const msys_native_process_layout *layout,
+    size_t item_count,
+    size_t *index
 );
 
 int msys_native_recents_close_hit(

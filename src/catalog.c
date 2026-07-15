@@ -9,6 +9,8 @@
 
 #define OBJECT_CAPACITY 8192u
 
+static int get_boolean(const char *object, const char *key, int *value);
+
 static const char *skip_space(const char *cursor, const char *end)
 {
     while (cursor < end && isspace((unsigned char)*cursor) != 0) {
@@ -118,6 +120,31 @@ static int get_optional_string(
         }
     }
     return result == MSYS_MIPC_OK;
+}
+
+static int get_optional_u64(
+    const char *object,
+    const char *key,
+    uint64_t *value,
+    int *available
+)
+{
+    const char *raw = NULL;
+    size_t length = 0u;
+    int result;
+    if (value == NULL) return 0;
+    *value = 0u;
+    if (available != NULL) *available = 0;
+    result = msys_mipc_json_get_u64(object, key, value);
+    if (result == MSYS_MIPC_OK) {
+        if (available != NULL) *available = 1;
+        return 1;
+    }
+    if (
+        msys_mipc_json_get_raw(object, key, &raw, &length) == MSYS_MIPC_OK &&
+        length == 4u && memcmp(raw, "null", 4u) == 0
+    ) return 1;
+    return result == MSYS_MIPC_NOT_FOUND;
 }
 
 static void copy_truncated(char *output, size_t capacity, const char *value)
@@ -494,6 +521,105 @@ int msys_native_apply_task_resources(
             resources, "pss_kib", &items[position].pss_kib
         ) == MSYS_MIPC_OK;
     }
+    return 1;
+}
+
+int msys_native_parse_processes(
+    const char *payload,
+    msys_native_process *items,
+    size_t capacity,
+    size_t *count,
+    msys_native_process_metadata *metadata
+)
+{
+    const char *array = NULL;
+    size_t array_length = 0u;
+    size_t offset = 0u;
+    size_t used = 0u;
+    char schema[64];
+    int next;
+    if (
+        payload == NULL || items == NULL || count == NULL || metadata == NULL
+    ) return 0;
+    *count = 0u;
+    memset(metadata, 0, sizeof(*metadata));
+    if (
+        msys_mipc_json_get_string(
+            payload, "schema", schema, sizeof(schema), NULL
+        ) != MSYS_MIPC_OK ||
+        strcmp(schema, "msys.process-list.v1") != 0 ||
+        msys_mipc_json_get_u64(
+            payload, "managed_count", &metadata->managed_count
+        ) != MSYS_MIPC_OK ||
+        msys_mipc_json_get_u64(
+            payload, "system_count", &metadata->system_count
+        ) != MSYS_MIPC_OK ||
+        get_boolean(
+            payload, "managed_truncated", &metadata->managed_truncated
+        ) == 0 ||
+        get_boolean(
+            payload, "system_truncated", &metadata->system_truncated
+        ) == 0 ||
+        msys_mipc_json_get_raw(
+            payload, "processes", &array, &array_length
+        ) != MSYS_MIPC_OK
+    ) return 0;
+    while (used < capacity && used < MSYS_NATIVE_MAX_PROCESSES) {
+        const char *raw = NULL;
+        size_t raw_length = 0u;
+        char object[OBJECT_CAPACITY];
+        msys_native_process item;
+        memset(&item, 0, sizeof(item));
+        next = next_object(array, array_length, &offset, &raw, &raw_length);
+        if (next == 0) break;
+        if (next < 0) return 0;
+        if (copy_object(raw, raw_length, object) == 0) continue;
+        if (
+            msys_mipc_json_get_u64(object, "pid", &item.pid) != MSYS_MIPC_OK ||
+            item.pid == 0u ||
+            get_optional_u64(object, "ppid", &item.ppid, NULL) == 0 ||
+            get_optional_u64(object, "uid", &item.uid, NULL) == 0 ||
+            get_optional_u64(
+                object, "rss_kib", &item.rss_kib, &item.rss_available
+            ) == 0 ||
+            get_optional_u64(
+                object, "generation", &item.generation, NULL
+            ) == 0 ||
+            get_boolean(object, "msys_owned", &item.msys_owned) == 0 ||
+            get_optional_string(
+                object, "name", item.name, sizeof(item.name)
+            ) == 0 ||
+            get_optional_string(
+                object, "state", item.state, sizeof(item.state)
+            ) == 0 ||
+            get_optional_string(
+                object, "source", item.source, sizeof(item.source)
+            ) == 0 ||
+            get_optional_string(
+                object, "component", item.component, sizeof(item.component)
+            ) == 0 ||
+            get_optional_string(
+                object,
+                "component_state",
+                item.component_state,
+                sizeof(item.component_state)
+            ) == 0 ||
+            get_optional_string(
+                object, "runtime", item.runtime, sizeof(item.runtime)
+            ) == 0 ||
+            get_optional_string(
+                object, "lifecycle", item.lifecycle, sizeof(item.lifecycle)
+            ) == 0
+        ) continue;
+        if (item.name[0] == '\0') {
+            (void)snprintf(
+                item.name, sizeof(item.name), "PID %llu",
+                (unsigned long long)item.pid
+            );
+        }
+        items[used++] = item;
+    }
+    *count = used;
     return 1;
 }
 

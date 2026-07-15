@@ -261,6 +261,40 @@ void msys_native_recents_compute(
         ? rows * layout->card_height + (rows - 1) * layout->gap : 0;
 }
 
+void msys_native_process_compute(
+    msys_native_process_layout *layout,
+    int width,
+    int height,
+    int content_top,
+    int right_inset,
+    int bottom_inset,
+    size_t item_count
+)
+{
+    if (layout == NULL) return;
+    width = width > 0 ? width : 1;
+    height = height > 0 ? height : 1;
+    content_top = bounded(content_top, 0, height - 1);
+    right_inset = bounded(right_inset, 0, width - 1);
+    bottom_inset = bounded(bottom_inset, 0, height - content_top - 1);
+    layout->margin = 14;
+    layout->checkbox_y = content_top;
+    layout->checkbox_height = 44;
+    layout->rows_top = content_top + layout->checkbox_height + 8;
+    if (layout->rows_top >= height - bottom_inset) {
+        layout->rows_top = height - bottom_inset - 1;
+    }
+    layout->row_height = 46;
+    layout->gap = 4;
+    layout->viewport_height =
+        height - bottom_inset - layout->rows_top - layout->margin;
+    if (layout->viewport_height < 1) layout->viewport_height = 1;
+    layout->content_height = item_count == 0u ? 0 :
+        (int)item_count * layout->row_height +
+        ((int)item_count - 1) * layout->gap;
+    (void)right_inset;
+}
+
 int msys_native_scroll_clamp(int requested, int content_height, int viewport_height)
 {
     int maximum = content_height - viewport_height;
@@ -362,6 +396,66 @@ int msys_native_recents_exit_hit(
     right_inset = bounded(right_inset, 0, width - 1);
     return y >= top_inset && y < header_bottom &&
         x >= width - right_inset - 88 && x < width - right_inset;
+}
+
+int msys_native_recents_process_hit(
+    int x,
+    int y,
+    int width,
+    int top_inset,
+    int right_inset,
+    int header_bottom
+)
+{
+    if (width <= 0) return 0;
+    top_inset = bounded(top_inset, 0, header_bottom);
+    right_inset = bounded(right_inset, 0, width - 1);
+    return y >= top_inset && y < header_bottom &&
+        x >= width - right_inset - 196 && x < width - right_inset - 92;
+}
+
+int msys_native_process_checkbox_hit(
+    int x,
+    int y,
+    int width,
+    int right_inset,
+    const msys_native_process_layout *layout
+)
+{
+    if (layout == NULL || width <= 0) return 0;
+    right_inset = bounded(right_inset, 0, width - 1);
+    return x >= layout->margin && x < width - right_inset - layout->margin &&
+        y >= layout->checkbox_y &&
+        y < layout->checkbox_y + layout->checkbox_height;
+}
+
+int msys_native_process_row_hit(
+    int x,
+    int y,
+    int width,
+    int right_inset,
+    int scroll,
+    const msys_native_process_layout *layout,
+    size_t item_count,
+    size_t *index
+)
+{
+    int relative_y;
+    int row;
+    if (layout == NULL || index == NULL || width <= 0) return 0;
+    right_inset = bounded(right_inset, 0, width - 1);
+    relative_y = y + scroll - layout->rows_top;
+    if (
+        x < layout->margin || x >= width - right_inset - layout->margin ||
+        relative_y < 0
+    ) return 0;
+    row = relative_y / (layout->row_height + layout->gap);
+    if (
+        relative_y % (layout->row_height + layout->gap) >= layout->row_height ||
+        row < 0 || (size_t)row >= item_count
+    ) return 0;
+    *index = (size_t)row;
+    return 1;
 }
 
 int msys_native_recents_close_hit(
