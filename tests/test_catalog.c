@@ -62,6 +62,25 @@ int main(void)
     CHECK(strcmp(tasks[1].window_id, "beta") == 0);
     CHECK(strcmp(tasks[2].component, "org.example:gamma") == 0);
     CHECK(strcmp(tasks[3].window_id, "external") == 0);
+    CHECK(msys_native_apply_task_resources(
+        "{\"windows\":["
+        "{\"component\":\"org.example:alpha\",\"state\":\"ready\",\"lifecycle\":\"manual\","
+        "\"resources\":{\"rss_kib\":12000,\"pss_kib\":9000}},"
+        "{\"component\":\"org.example:beta\",\"state\":\"ready\",\"lifecycle\":\"background\","
+        "\"resources\":{\"rss_kib\":7000,\"pss_kib\":null}}"
+        "]}",
+        tasks,
+        count
+    ));
+    CHECK(strcmp(tasks[0].component_state, "ready") == 0);
+    CHECK(strcmp(tasks[0].lifecycle, "manual") == 0);
+    CHECK(tasks[0].rss_available && tasks[0].rss_kib == 12000u);
+    CHECK(tasks[0].pss_available && tasks[0].pss_kib == 9000u);
+    CHECK(strcmp(tasks[1].lifecycle, "background") == 0);
+    CHECK(tasks[1].rss_available && tasks[1].rss_kib == 7000u);
+    CHECK(!tasks[1].pss_available);
+    CHECK(!tasks[3].rss_available);
+    CHECK(!msys_native_apply_task_resources("{\"windows\":{}}", tasks, count));
     CHECK(!msys_native_parse_apps("{\"apps\":{}}", apps, 1u, &count));
     CHECK(msys_native_json_escape("a\"b\\c\n", escaped, sizeof(escaped)));
     CHECK(strcmp(escaped, "a\\\"b\\\\c\\n") == 0);

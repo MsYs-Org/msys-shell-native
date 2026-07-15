@@ -411,6 +411,92 @@ int msys_native_parse_tasks(
     return 1;
 }
 
+int msys_native_apply_task_resources(
+    const char *payload,
+    msys_native_task *items,
+    size_t count
+)
+{
+    const char *array = NULL;
+    size_t array_length = 0u;
+    size_t offset = 0u;
+    size_t position;
+    int next;
+    if (payload == NULL || items == NULL) return 0;
+    for (position = 0u; position < count; position++) {
+        items[position].component_state[0] = '\0';
+        items[position].lifecycle[0] = '\0';
+        items[position].rss_kib = 0u;
+        items[position].pss_kib = 0u;
+        items[position].rss_available = 0;
+        items[position].pss_available = 0;
+    }
+    if (
+        msys_mipc_json_get_raw(payload, "windows", &array, &array_length) !=
+        MSYS_MIPC_OK
+    ) {
+        return 0;
+    }
+    for (;;) {
+        const char *raw = NULL;
+        size_t raw_length = 0u;
+        const char *resource_raw = NULL;
+        size_t resource_length = 0u;
+        char object[OBJECT_CAPACITY];
+        char resources[OBJECT_CAPACITY];
+        char component[MSYS_NATIVE_COMPONENT_CAPACITY];
+        next = next_object(array, array_length, &offset, &raw, &raw_length);
+        if (next == 0) break;
+        if (next < 0) return 0;
+        if (
+            copy_object(raw, raw_length, object) == 0 ||
+            get_optional_string(
+                object, "component", component, sizeof(component)
+            ) == 0 ||
+            component[0] == '\0'
+        ) {
+            continue;
+        }
+        for (position = 0u; position < count; position++) {
+            if (strcmp(items[position].component, component) == 0) break;
+        }
+        if (position >= count) continue;
+        if (
+            get_optional_string(
+                object,
+                "state",
+                items[position].component_state,
+                sizeof(items[position].component_state)
+            ) == 0 ||
+            get_optional_string(
+                object,
+                "lifecycle",
+                items[position].lifecycle,
+                sizeof(items[position].lifecycle)
+            ) == 0
+        ) {
+            items[position].component_state[0] = '\0';
+            items[position].lifecycle[0] = '\0';
+            continue;
+        }
+        if (
+            msys_mipc_json_get_raw(
+                object, "resources", &resource_raw, &resource_length
+            ) != MSYS_MIPC_OK ||
+            copy_object(resource_raw, resource_length, resources) == 0
+        ) {
+            continue;
+        }
+        items[position].rss_available = msys_mipc_json_get_u64(
+            resources, "rss_kib", &items[position].rss_kib
+        ) == MSYS_MIPC_OK;
+        items[position].pss_available = msys_mipc_json_get_u64(
+            resources, "pss_kib", &items[position].pss_kib
+        ) == MSYS_MIPC_OK;
+    }
+    return 1;
+}
+
 const char *msys_native_task_display_name(
     const msys_native_task *task,
     const msys_native_app *apps,

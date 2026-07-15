@@ -273,6 +273,42 @@ def reply(channel: socket.socket, request: dict, payload: dict) -> None:
     send(channel, {"type": "return", "id": request["id"], "payload": payload})
 
 
+def reply_recents_snapshot(
+    channel: socket.socket,
+    request: dict,
+    windows: dict,
+) -> None:
+    reply(channel, request, windows)
+    resources_request = wait_for(
+        channel, outbound_call("msys.core", "foreground_stack")
+    )
+    if resources_request.get("payload") != {"include_resources": True}:
+        raise RuntimeError(f"wrong recents resource request: {resources_request}")
+    managed = []
+    for index, window in enumerate(windows.get("windows", [])):
+        component = window.get("component")
+        if not component:
+            continue
+        managed.append({
+            "component": component,
+            "title": window.get("title") or component,
+            "identity": window.get("identity") or "",
+            "state": "ready",
+            "lifecycle": "background" if index == 1 else "manual",
+            "resources": {
+                "schema": "msys.process-memory.v1",
+                "scope": "process-group",
+                "unit": "KiB",
+                "available": True,
+                "rss_kib": 12000 + index * 1000,
+                "pss_available": index != 1,
+                "pss_kib": None if index == 1 else 9000 + index * 1000,
+                "reason": "pss-unavailable" if index == 1 else None,
+            },
+        })
+    reply(channel, resources_request, {"windows": managed})
+
+
 def rss_kib(pid: int) -> int:
     for line in Path(f"/proc/{pid}/status").read_text(encoding="ascii").splitlines():
         if line.startswith("VmRSS:"):
@@ -872,7 +908,7 @@ def main() -> int:
                 },
             ],
         }
-        reply(parent, windows_request, window_snapshot)
+        reply_recents_snapshot(parent, windows_request, window_snapshot)
         if not wait_window_viewable("MSYS Recents"):
             raise RuntimeError("Overview did not map after window snapshots completed")
         recents_window = window_id("MSYS Recents")
@@ -958,7 +994,7 @@ def main() -> int:
             parent, outbound_call("role:window-manager", "list_windows")
         )
         wait_for(parent, packet_type("return", 60))
-        reply(parent, multi_request, multi_snapshot)
+        reply_recents_snapshot(parent, multi_request, multi_snapshot)
         send(parent, {"type": "call", "id": 61, "method": "list_recents", "payload": {}})
         multi = wait_for(parent, packet_type("return", 61))
         multi_tasks = multi.get("payload", {}).get("tasks", [])
@@ -1011,7 +1047,7 @@ def main() -> int:
         beta_refresh = wait_for(
             parent, outbound_call("role:window-manager", "list_windows")
         )
-        reply(parent, beta_refresh, after_beta_close)
+        reply_recents_snapshot(parent, beta_refresh, after_beta_close)
         send(parent, {"type": "call", "id": 63, "method": "list_recents", "payload": {}})
         after_close = wait_for(parent, packet_type("return", 63))
         if [item.get("component") for item in after_close.get("payload", {}).get("tasks", [])] != [
@@ -1047,7 +1083,7 @@ def main() -> int:
             parent, outbound_call("role:window-manager", "list_windows")
         )
         wait_for(parent, packet_type("return", 65))
-        reply(parent, abnormal_open, after_beta_close)
+        reply_recents_snapshot(parent, abnormal_open, after_beta_close)
         if not wait_window_viewable("MSYS Recents"):
             raise RuntimeError("Overview did not reopen before abnormal-exit refresh")
         failed_event = {
@@ -1066,11 +1102,11 @@ def main() -> int:
         # A duplicate terminal event while the first inventory request is in
         # flight becomes one bounded follow-up rather than parallel readers.
         send(parent, failed_event)
-        reply(parent, abnormal_refresh, alpha_only)
+        reply_recents_snapshot(parent, abnormal_refresh, alpha_only)
         coalesced_refresh = wait_for(
             parent, outbound_call("role:window-manager", "list_windows")
         )
-        reply(parent, coalesced_refresh, alpha_only)
+        reply_recents_snapshot(parent, coalesced_refresh, alpha_only)
         send(parent, {"type": "call", "id": 66, "method": "list_recents", "payload": {}})
         after_failure = wait_for(parent, packet_type("return", 66))
         if [item.get("component") for item in after_failure.get("payload", {}).get("tasks", [])] != [
@@ -1085,7 +1121,7 @@ def main() -> int:
             parent, outbound_call("role:window-manager", "list_windows")
         )
         wait_for(parent, packet_type("return", 67))
-        reply(parent, restore_catalog, window_snapshot)
+        reply_recents_snapshot(parent, restore_catalog, window_snapshot)
         send(parent, {"type": "call", "id": 68, "method": "list_recents", "payload": {}})
         restored = wait_for(parent, packet_type("return", 68))
         if len(restored.get("payload", {}).get("tasks", [])) != 2:
@@ -1167,7 +1203,7 @@ def main() -> int:
                 parent, outbound_call("role:window-manager", "list_windows")
             )
             wait_for(parent, packet_type("return", 47))
-            reply(parent, exit_windows_request, window_snapshot)
+            reply_recents_snapshot(parent, exit_windows_request, window_snapshot)
             if not wait_window_viewable("MSYS Recents"):
                 raise RuntimeError("Overview did not map before its Exit action")
             exit_width, _exit_height = window_geometry("MSYS Recents")
@@ -1406,7 +1442,7 @@ def main() -> int:
                 parent, outbound_call("role:window-manager", "list_windows")
             )
             wait_for(parent, packet_type("return", 48))
-            reply(parent, second_windows_request, window_snapshot)
+            reply_recents_snapshot(parent, second_windows_request, window_snapshot)
             if not wait_window_viewable("MSYS Recents"):
                 raise RuntimeError("Apps callback did not show Overview")
 
@@ -1452,7 +1488,7 @@ def main() -> int:
                 parent, outbound_call("role:window-manager", "list_windows")
             )
             wait_for(parent, packet_type("return", 49))
-            reply(parent, close_windows_request, window_snapshot)
+            reply_recents_snapshot(parent, close_windows_request, window_snapshot)
             if not wait_window_viewable("MSYS Recents"):
                 raise RuntimeError("Overview did not map before its close action")
             send(parent, {

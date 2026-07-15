@@ -2,6 +2,7 @@
 #define MSYS_SHELL_NATIVE_CATALOG_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,6 +34,12 @@ typedef struct msys_native_task {
     char role[MSYS_NATIVE_WINDOW_META_CAPACITY];
     char kind[MSYS_NATIVE_WINDOW_META_CAPACITY];
     char state[MSYS_NATIVE_WINDOW_META_CAPACITY];
+    char component_state[MSYS_NATIVE_WINDOW_META_CAPACITY];
+    char lifecycle[MSYS_NATIVE_WINDOW_META_CAPACITY];
+    uint64_t rss_kib;
+    uint64_t pss_kib;
+    int rss_available;
+    int pss_available;
     char thumbnail[MSYS_NATIVE_PATH_CAPACITY];
 } msys_native_task;
 
@@ -48,6 +55,12 @@ int msys_native_parse_tasks(
     msys_native_task *items,
     size_t capacity,
     size_t *count
+);
+
+int msys_native_apply_task_resources(
+    const char *payload,
+    msys_native_task *items,
+    size_t count
 );
 
 const char *msys_native_task_display_name(

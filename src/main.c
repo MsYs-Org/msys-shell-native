@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.13"
+#define APP_VERSION "0.3.14"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8
@@ -61,6 +61,7 @@ enum pending_kind {
     PENDING_APPS_LIST,
     PENDING_APP_START,
     PENDING_RECENTS_LIST,
+    PENDING_RECENTS_RESOURCES,
     PENDING_TASK_ACTIVATE,
     PENDING_TASK_CLOSE,
     PENDING_NAVIGATION,
@@ -312,6 +313,7 @@ static volatile sig_atomic_t stop_requested = 0;
 
 static void request_apps(native_shell *shell);
 static void request_recents(native_shell *shell);
+static void request_recents_resources(native_shell *shell);
 static void activate_app(native_shell *shell, size_t index);
 static void activate_task(native_shell *shell, size_t index);
 static void close_task(native_shell *shell, size_t index);
@@ -1921,6 +1923,64 @@ static void recents_card_rect(
     *y = layout->top + row * (layout->card_height + layout->gap) - scroll;
 }
 
+static const char *task_state_label(
+    native_shell *shell,
+    const msys_native_task *task
+)
+{
+    const char *state;
+    if (strcmp(task->lifecycle, "background") == 0) {
+        return tr(shell, "recents.state_background");
+    }
+    state = task->component_state[0] != '\0'
+        ? task->component_state : task->state;
+    if (strcmp(state, "ready") == 0) return tr(shell, "recents.state_ready");
+    if (strcmp(state, "visible") == 0) return tr(shell, "recents.state_visible");
+    if (strcmp(state, "minimized") == 0) return tr(shell, "recents.state_minimized");
+    return state[0] != '\0' ? state : tr(shell, "recents.state_unknown");
+}
+
+static void format_task_memory(
+    native_shell *shell,
+    const msys_native_task *task,
+    char *output,
+    size_t capacity
+)
+{
+    const char *kind;
+    uint64_t value;
+    if (task->pss_available != 0) {
+        kind = "PSS";
+        value = task->pss_kib;
+    } else if (task->rss_available != 0) {
+        kind = "RSS";
+        value = task->rss_kib;
+    } else {
+        (void)snprintf(
+            output, capacity, "%s", tr(shell, "recents.memory_unavailable")
+        );
+        return;
+    }
+    if (value >= 1024u) {
+        (void)snprintf(
+            output,
+            capacity,
+            "%s %llu.%lluM",
+            kind,
+            (unsigned long long)(value / 1024u),
+            (unsigned long long)((value % 1024u) * 10u / 1024u)
+        );
+    } else {
+        (void)snprintf(
+            output,
+            capacity,
+            "%s %lluK",
+            kind,
+            (unsigned long long)value
+        );
+    }
+}
+
 static void draw_task_card(
     native_shell *shell,
     const msys_native_recents_layout *layout,
@@ -1936,6 +1996,8 @@ static void draw_task_card(
     int preview_y;
     int preview_width;
     int title_y;
+    char memory[48];
+    char metadata[128];
     int active = shell->recents_pressed == (int)index ||
         shell->recents_pulse == (int)index;
     int drag = shell->recents_horizontal_drag != 0 && shell->recents_pressed == (int)index
@@ -1998,6 +2060,23 @@ static void draw_task_card(
     draw_text_ellipsized(
         shell, shell->recents, x + 14, title_y,
         layout->card_width - 58, title, shell->foreground
+    );
+    format_task_memory(shell, &shell->tasks[index], memory, sizeof(memory));
+    (void)snprintf(
+        metadata,
+        sizeof(metadata),
+        "%s · %s",
+        task_state_label(shell, &shell->tasks[index]),
+        memory
+    );
+    draw_text_ellipsized(
+        shell,
+        shell->recents,
+        x + 14,
+        title_y + 18,
+        layout->card_width - 28,
+        metadata,
+        shell->muted
     );
     set_foreground(shell, shell->accent);
     XDrawLine(shell->display, shell->recents, shell->gc, x + layout->card_width - 31, title_y - 12, x + layout->card_width - 19, title_y);
@@ -3211,7 +3290,10 @@ static void request_apps(native_shell *shell)
 
 static void request_recents(native_shell *shell)
 {
-    if (pending_has_kind(shell, PENDING_RECENTS_LIST) != 0) {
+    if (
+        pending_has_kind(shell, PENDING_RECENTS_LIST) != 0 ||
+        pending_has_kind(shell, PENDING_RECENTS_RESOURCES) != 0
+    ) {
         shell->tasks_refresh_queued = 1;
         return;
     }
@@ -3238,6 +3320,21 @@ static void request_recents(native_shell *shell)
             "%s", tr(shell, "error.window_manager_unavailable")
         );
     }
+}
+
+static void request_recents_resources(native_shell *shell)
+{
+    if (pending_has_kind(shell, PENDING_RECENTS_RESOURCES) != 0) return;
+    (void)send_async(
+        shell,
+        PENDING_RECENTS_RESOURCES,
+        0u,
+        "msys.core",
+        "foreground_stack",
+        "{\"include_resources\":true}",
+        3000u,
+        1
+    );
 }
 
 static int component_payload(
@@ -3600,22 +3697,54 @@ static int serialize_tasks(native_shell *shell, char *response, size_t capacity)
         char window_id[MSYS_NATIVE_WINDOW_ID_CAPACITY * 6u + 1u];
         char title[MSYS_NATIVE_NAME_CAPACITY * 6u + 1u];
         char thumbnail[MSYS_NATIVE_PATH_CAPACITY * 6u + 1u];
+        char state[MSYS_NATIVE_WINDOW_META_CAPACITY * 6u + 1u];
+        char lifecycle[MSYS_NATIVE_WINDOW_META_CAPACITY * 6u + 1u];
+        char rss[32];
+        char pss[32];
         size_t checkpoint = used;
+        if (shell->tasks[index].rss_available != 0) {
+            (void)snprintf(
+                rss, sizeof(rss), "%llu",
+                (unsigned long long)shell->tasks[index].rss_kib
+            );
+        } else {
+            (void)snprintf(rss, sizeof(rss), "null");
+        }
+        if (shell->tasks[index].pss_available != 0) {
+            (void)snprintf(
+                pss, sizeof(pss), "%llu",
+                (unsigned long long)shell->tasks[index].pss_kib
+            );
+        } else {
+            (void)snprintf(pss, sizeof(pss), "null");
+        }
         if (
             msys_native_json_escape(shell->tasks[index].component, component, sizeof(component)) == 0 ||
             msys_native_json_escape(shell->tasks[index].window_id, window_id, sizeof(window_id)) == 0 ||
             msys_native_json_escape(shell->tasks[index].title, title, sizeof(title)) == 0 ||
             msys_native_json_escape(shell->tasks[index].thumbnail, thumbnail, sizeof(thumbnail)) == 0 ||
+            msys_native_json_escape(
+                shell->tasks[index].component_state, state, sizeof(state)
+            ) == 0 ||
+            msys_native_json_escape(
+                shell->tasks[index].lifecycle, lifecycle, sizeof(lifecycle)
+            ) == 0 ||
             !append_format(
                 response,
                 capacity,
                 &used,
-                "%s{\"component\":\"%s\",\"id\":\"%s\",\"title\":\"%s\",\"thumbnail\":\"%s\"}",
+                "%s{\"component\":\"%s\",\"id\":\"%s\",\"title\":\"%s\","
+                "\"thumbnail\":\"%s\",\"state\":\"%s\",\"lifecycle\":\"%s\","
+                "\"rss_kib\":%s,\"pss_kib\":%s}",
                 emitted == 0u ? "" : ",",
                 component,
                 window_id,
                 title,
-                thumbnail
+                thumbnail,
+                state,
+                lifecycle,
+                rss,
+                pss
             )
         ) {
             used = checkpoint;
@@ -4027,6 +4156,13 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
                 shell->tasks_refresh_queued = 0;
                 request_recents(shell);
             }
+        } else if (pending.kind == PENDING_RECENTS_RESOURCES) {
+            if (shell->tasks_refresh_queued != 0) {
+                shell->tasks_refresh_queued = 0;
+                request_recents(shell);
+            } else {
+                refresh_recents_presentation(shell);
+            }
         } else if (pending.kind == PENDING_APP_START) {
             hide_launch_transition(shell);
             packet_error_text(packet, shell->apps_message, sizeof(shell->apps_message));
@@ -4126,10 +4262,27 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
         shell->recents_pressed = -1;
         shell->recents_pulse = -1;
         shell->recents_pulse_until_ms = 0u;
-        refresh_recents_presentation(shell);
         if (shell->tasks_refresh_queued != 0) {
             shell->tasks_refresh_queued = 0;
             request_recents(shell);
+        } else {
+            if (shell->tasks_state == CATALOG_READY) {
+                request_recents_resources(shell);
+            }
+            if (pending_has_kind(shell, PENDING_RECENTS_RESOURCES) == 0) {
+                refresh_recents_presentation(shell);
+            }
+        }
+        break;
+    case PENDING_RECENTS_RESOURCES:
+        (void)msys_native_apply_task_resources(
+            payload, shell->tasks, shell->task_count
+        );
+        if (shell->tasks_refresh_queued != 0) {
+            shell->tasks_refresh_queued = 0;
+            request_recents(shell);
+        } else {
+            refresh_recents_presentation(shell);
         }
         break;
     case PENDING_TASK_ACTIVATE:
@@ -5356,6 +5509,14 @@ static void periodic(native_shell *shell)
             ) {
                 shell->apps_refresh_queued = 0;
                 request_apps(shell);
+            }
+        } else if (expired.kind == PENDING_RECENTS_RESOURCES) {
+            if (shell->tasks_refresh_queued != 0) {
+                shell->tasks_refresh_queued = 0;
+                request_recents(shell);
+            } else {
+                refresh_recents_presentation(shell);
+                if (shell->recents_visible != 0) visual_change = 1;
             }
         } else if (
             expired.kind == PENDING_RECENTS_LIST ||
