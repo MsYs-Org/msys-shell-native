@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -204,6 +205,25 @@ def wait_for(channel: socket.socket, predicate: Callable[[dict], bool]) -> dict:
     raise TimeoutError("expected component packet was not received")
 
 
+def assert_no_outbound_call(
+    channel: socket.socket,
+    target: str,
+    method: str,
+    timeout: float = 0.25,
+) -> None:
+    previous_timeout = channel.gettimeout()
+    channel.settimeout(timeout)
+    try:
+        packet = receive(channel)
+    except socket.timeout:
+        return
+    finally:
+        channel.settimeout(previous_timeout)
+    if outbound_call(target, method)(packet):
+        raise RuntimeError(f"cancelled release still called {target}.{method}: {packet}")
+    raise RuntimeError(f"unexpected packet during cancelled release: {packet}")
+
+
 def packet_type(name: str, request_id: int | None = None) -> Callable[[dict], bool]:
     return lambda packet: packet.get("type") == name and (
         request_id is None or packet.get("id") == request_id
@@ -277,6 +297,88 @@ def debug_overlay_click(title: str, x: int, y: int) -> None:
         x11.XFlush(display)
     finally:
         x11.XCloseDisplay(display)
+
+
+def debug_cross_surface_swipe(
+    title: str,
+    start_x: int,
+    start_y: int,
+    end_root_x: int,
+    end_root_y: int,
+) -> None:
+    """Start inside a shell surface and release over a different X11 window."""
+    frame_x, frame_y, width, height = window_frame(title)
+    if not 0 <= start_x < width or not 0 <= start_y < height:
+        raise RuntimeError(
+            f"cross-surface swipe starts outside {title}: "
+            f"{(start_x, start_y, width, height)}"
+        )
+    x11 = ctypes.CDLL("libX11.so.6")
+    xtst = ctypes.CDLL("libXtst.so.6")
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    xtst.XTestFakeMotionEvent.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+    xtst.XTestFakeButtonEvent.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+    display = x11.XOpenDisplay(os.environ["DISPLAY"].encode("ascii"))
+    if not display:
+        raise RuntimeError("cannot open X display for cross-surface swipe")
+    pressed = False
+    try:
+        root_start_x = frame_x + start_x
+        root_start_y = frame_y + start_y
+        if not xtst.XTestFakeMotionEvent(
+            display, -1, root_start_x, root_start_y, 0
+        ):
+            raise RuntimeError("cross-surface initial motion failed")
+        if not xtst.XTestFakeButtonEvent(display, 1, 1, 0):
+            raise RuntimeError("cross-surface button press failed")
+        pressed = True
+        x11.XFlush(display)
+        for step in range(1, 7):
+            x = root_start_x + (end_root_x - root_start_x) * step // 6
+            y = root_start_y + (end_root_y - root_start_y) * step // 6
+            if not xtst.XTestFakeMotionEvent(display, -1, x, y, 0):
+                raise RuntimeError("cross-surface motion failed")
+            x11.XFlush(display)
+            time.sleep(0.03)
+        if not xtst.XTestFakeButtonEvent(display, 1, 0, 0):
+            raise RuntimeError("cross-surface button release failed")
+        pressed = False
+        x11.XFlush(display)
+    finally:
+        if pressed:
+            xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+            x11.XFlush(display)
+        x11.XCloseDisplay(display)
+
+
+def window_pixel_digest(title: str) -> bytes:
+    result = subprocess.run(
+        [
+            "xwd",
+            "-silent",
+            "-display",
+            os.environ["DISPLAY"],
+            "-id",
+            hex(window_id(title)),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return hashlib.sha256(result.stdout).digest()
 
 
 def window_geometry(title: str) -> tuple[int, int]:
@@ -370,6 +472,15 @@ def wait_window_viewable(title: str, timeout: float = 2) -> bool:
     return window_is_viewable(title)
 
 
+def wait_window_hidden(title: str, timeout: float = 2) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not window_is_viewable(title):
+            return True
+        time.sleep(0.05)
+    return not window_is_viewable(title)
+
+
 def main() -> int:
     binary = Path(sys.argv[1] if len(sys.argv) > 1 else "bin/msys-shell-native").resolve()
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -449,21 +560,132 @@ def main() -> int:
         if listed_apps[0].get("icon") != str(thumbnail):
             raise RuntimeError(f"launcher did not resolve the package icon: {listed}")
 
-        send(parent, {
-            "type": "call",
-            "id": 42,
-            "method": "activate_app",
-            "payload": {"component": "org.example.alpha:main"},
-        })
+        input_mode = os.environ.get("MSYS_PROBE_INPUT_MODE", "").strip()
+        if input_mode:
+            launcher_width, _launcher_height = window_geometry("MSYS Launcher")
+            margin = 14
+            gap = 12
+            columns = max(1, min(5, (launcher_width - margin * 2 + gap) // 100))
+            first_cell_width = (
+                launcher_width - margin * 2 - gap * (columns - 1)
+            ) // columns
+            first_cell_x = margin + first_cell_width // 2
+            debug_input(
+                "--debug-swipe-identity",
+                "org.msys.shell.native.launcher",
+                str(first_cell_x),
+                "108",
+                str(first_cell_x),
+                "188",
+                "220",
+            )
+            assert_no_outbound_call(parent, "msys.core", "start")
+            debug_input(
+                "--debug-click-identity",
+                "org.msys.shell.native.launcher",
+                str(first_cell_x),
+                "108",
+            )
+        else:
+            send(parent, {
+                "type": "call",
+                "id": 42,
+                "method": "activate_app",
+                "payload": {"component": "org.example.alpha:main"},
+            })
         start_request = wait_for(parent, outbound_call("msys.core", "start"))
         if start_request.get("payload") != {"component": "org.example.alpha:main"}:
             raise RuntimeError(f"wrong app start payload: {start_request}")
-        wait_for(parent, packet_type("return", 42))
+        if not wait_window_viewable("MSYS Launch Transition"):
+            raise RuntimeError("app activation did not map launch transition immediately")
+        assert_window_role(
+            "MSYS Launch Transition",
+            "animation-mask",
+            "org.msys.shell.native.launch-transition",
+        )
+        transition_width, transition_height = window_geometry(
+            "MSYS Launch Transition"
+        )
+        if transition_width > 236 or transition_height > 132:
+            raise RuntimeError(
+                f"launch transition is not compact: {(transition_width, transition_height)}"
+            )
+        if not input_mode:
+            wait_for(parent, packet_type("return", 42))
         reply(parent, start_request, {
             "component": "org.example.alpha:main",
             "state": "ready",
             "activation": {"ok": True},
         })
+        if not wait_window_hidden("MSYS Launch Transition"):
+            raise RuntimeError("ready app left launch transition visible")
+
+        send(parent, {
+            "type": "event",
+            "topic": "msys.lifecycle.transition",
+            "payload": {
+                "component": "org.example.alpha:main",
+                "phase": "closed",
+            },
+        })
+        send(parent, {"type": "call", "id": 69, "method": "status", "payload": {}})
+        wait_for(parent, packet_type("return", 69))
+        if not wait_window_viewable("MSYS Notifications"):
+            raise RuntimeError("application exit did not show bounded feedback")
+        if not wait_window_hidden("MSYS Notifications", timeout=1.8):
+            raise RuntimeError("application exit feedback outlived its bound")
+
+        send(parent, {
+            "type": "call",
+            "id": 70,
+            "method": "activate_app",
+            "payload": {"component": "org.example.beta:main"},
+        })
+        failed_start = wait_for(parent, outbound_call("msys.core", "start"))
+        wait_for(parent, packet_type("return", 70))
+        if not wait_window_viewable("MSYS Launch Transition"):
+            raise RuntimeError("second launch transition did not map")
+        send(parent, {
+            "type": "error",
+            "id": failed_start["id"],
+            "error": {"code": "START_FAILED", "message": "probe failure"},
+        })
+        if not wait_window_hidden("MSYS Launch Transition"):
+            raise RuntimeError("failed app left launch transition visible")
+        if not wait_window_viewable("MSYS Notifications"):
+            raise RuntimeError("failed app did not expose bounded error feedback")
+        send(parent, {"type": "call", "id": 71, "method": "hide", "payload": {}})
+        wait_for(parent, packet_type("return", 71))
+
+        send(parent, {
+            "type": "call",
+            "id": 72,
+            "method": "activate_app",
+            "payload": {"component": "org.example.beta:main"},
+        })
+        late_success = wait_for(parent, outbound_call("msys.core", "start"))
+        wait_for(parent, packet_type("return", 72))
+        send(parent, {
+            "type": "event",
+            "topic": "msys.lifecycle.transition",
+            "payload": {
+                "component": "org.example.beta:main",
+                "phase": "failed",
+            },
+        })
+        if not wait_window_hidden("MSYS Launch Transition"):
+            raise RuntimeError("failed lifecycle left launch transition visible")
+        if not wait_window_viewable("MSYS Notifications"):
+            raise RuntimeError("failed lifecycle did not expose bounded feedback")
+        reply(parent, late_success, {
+            "component": "org.example.beta:main",
+            "state": "ready",
+            "activation": {"ok": True},
+        })
+        if not window_is_viewable("MSYS Notifications"):
+            raise RuntimeError("late start success suppressed terminal feedback")
+        send(parent, {"type": "call", "id": 73, "method": "hide", "payload": {}})
+        wait_for(parent, packet_type("return", 73))
 
         # Keep a real managed application and override-redirect input method in
         # the server tree.  A map-state-only assertion cannot detect Overview
@@ -610,17 +832,24 @@ def main() -> int:
 
         if os.environ.get("MSYS_PROBE_INPUT_MODE", "").strip():
             width, height = window_geometry("MSYS Recents")
-            debug_input(
-                "--debug-swipe-identity",
-                "org.msys.shell.task-switcher",
-                str(width // 2),
-                str(max(40, height - 36)),
-                str(width // 2),
-                "72",
-                "260",
+            chrome_x, chrome_y, chrome_width, chrome_height = window_frame(
+                "MSYS Chrome"
             )
+            before_cross_surface_release = window_pixel_digest("MSYS Recents")
+            debug_cross_surface_swipe(
+                "MSYS Recents",
+                width // 2,
+                max(40, height - 36),
+                chrome_x + chrome_width // 2,
+                chrome_y + chrome_height // 2,
+            )
+            time.sleep(0.08)
             if not window_is_viewable("MSYS Recents"):
                 raise RuntimeError("multi-task scroll dismissed Overview")
+            if window_pixel_digest("MSYS Recents") == before_cross_surface_release:
+                raise RuntimeError(
+                    "cross-surface Overview release did not present final scroll"
+                )
 
         # Close the middle card by its stable component.  The stop reply is
         # followed by a fresh window inventory and a two-card reflow.
@@ -755,7 +984,6 @@ def main() -> int:
         if 0 < hold_ms <= 10000:
             time.sleep(hold_ms / 1000)
 
-        input_mode = os.environ.get("MSYS_PROBE_INPUT_MODE", "").strip()
         hide_request_sent = False
         restore_request: dict | None = None
         if input_mode:
@@ -801,6 +1029,19 @@ def main() -> int:
             reply(parent, exit_windows_request, window_snapshot)
             if not wait_window_viewable("MSYS Recents"):
                 raise RuntimeError("Overview did not map before its Exit action")
+            exit_width, _exit_height = window_geometry("MSYS Recents")
+            debug_input(
+                "--debug-swipe-identity",
+                "org.msys.shell.task-switcher",
+                str(exit_width - 30),
+                "30",
+                str(exit_width // 2),
+                "30",
+                "180",
+            )
+            if not window_is_viewable("MSYS Recents"):
+                raise RuntimeError("Exit press released outside still hid Overview")
+            assert_no_outbound_call(parent, "msys.core", "start")
             debug_input(
                 "--debug-click-identity",
                 "org.msys.shell.task-switcher",
@@ -816,6 +1057,18 @@ def main() -> int:
             if window_is_viewable("MSYS Recents"):
                 raise RuntimeError("Overview Exit left the surface visible")
 
+            debug_input(
+                "--debug-swipe-identity",
+                "org.msys.shell.native.chrome",
+                "18",
+                str(chrome_height // 2),
+                str(chrome_width // 2),
+                str(chrome_height // 2),
+                "180",
+            )
+            assert_no_outbound_call(
+                parent, "role:notification-center", "show"
+            )
             debug_input(
                 "--debug-click-identity",
                 "org.msys.shell.native.chrome",
@@ -927,6 +1180,19 @@ def main() -> int:
             # The centre control is Home in both navigation presentations; a
             # pill tap is deliberately the same typed action as the middle
             # three-button key.
+            if input_mode == "buttons":
+                debug_input(
+                    "--debug-swipe-identity",
+                    "org.msys.shell.native.navigation-pill",
+                    str(nav_width // 2 if nav_vertical else nav_width // 6),
+                    str(nav_height // 6 if nav_vertical else nav_height // 2),
+                    str(nav_width // 2),
+                    str(nav_height // 2),
+                    "180",
+                )
+                assert_no_outbound_call(
+                    parent, "role:window-manager", "navigation_action"
+                )
             debug_input(
                 "--debug-click-identity",
                 "org.msys.shell.native.navigation-pill",
@@ -1043,11 +1309,25 @@ def main() -> int:
             first_card_width = (
                 recents_width - recents_margin * 2 - recents_gap
             ) // 2
+            close_x = recents_margin + first_card_width - 28
+            close_y = min(240, recents_height - 24)
+            debug_input(
+                "--debug-swipe-identity",
+                "org.msys.shell.task-switcher",
+                str(close_x),
+                str(close_y),
+                str(close_x),
+                str(max(64, close_y - 52)),
+                "180",
+            )
+            if not window_is_viewable("MSYS Recents"):
+                raise RuntimeError("cancelled close release dismissed Overview")
+            assert_no_outbound_call(parent, "msys.core", "stop")
             debug_input(
                 "--debug-click-identity",
                 "org.msys.shell.task-switcher",
-                str(recents_margin + first_card_width - 28),
-                str(min(240, recents_height - 24)),
+                str(close_x),
+                str(close_y),
             )
         else:
             send(parent, {

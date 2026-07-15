@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.shell.native",
     "name": "MSYS Native Shell",
-    "version": "0.3.9",
+    "version": "0.3.10",
     "kind": "system",
     "vendor": "MSYS",
     "summary": "Lean adaptive Xlib shell with app icons and task previews",

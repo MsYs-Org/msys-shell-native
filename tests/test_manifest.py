@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.9")
+        self.assertEqual(self.document["package"]["version"], "0.3.10")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.9"', implementation)
+        self.assertIn('#define APP_VERSION "0.3.10"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -232,6 +232,66 @@ class NativeShellManifestTests(unittest.TestCase):
         )
         self.assertNotIn("XMapRaised", show_recents)
         self.assertIn("recents_mapped", implementation)
+
+    def test_finite_transition_and_release_only_drag_contract(self) -> None:
+        implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
+        self.assertIn('#define LAUNCH_TRANSITION_FRAMES 4', implementation)
+        self.assertIn('#define LAUNCH_TRANSITION_FRAME_MS 90u', implementation)
+        self.assertIn('"animation-mask"', implementation)
+        self.assertIn('"org.msys.shell.native.launch-transition"', implementation)
+        activate = implementation[
+            implementation.rindex("static void activate_app"):
+            implementation.rindex("static void activate_task")
+        ]
+        self.assertLess(
+            activate.index("show_launch_transition"),
+            activate.index("send_async"),
+        )
+        recents_motion = implementation[
+            implementation.index(
+                "event->type == MotionNotify && event->xmotion.window == shell->recents"
+            ):
+            implementation.index(
+                "event->type == ButtonRelease && event->xbutton.window == shell->recents"
+            )
+        ]
+        launcher_motion = implementation[
+            implementation.index(
+                "event->type == MotionNotify && event->xmotion.window == shell->launcher"
+            ):
+            implementation.index(
+                "event->type == ButtonRelease && event->xbutton.window == shell->launcher"
+            )
+        ]
+        self.assertNotIn("redraw_recents", recents_motion)
+        self.assertNotIn("redraw_launcher", launcher_motion)
+        recents_press = implementation[
+            implementation.index(
+                "event->type == ButtonPress && event->xbutton.window == shell->recents"
+            ):
+            implementation.index(
+                "event->type == MotionNotify && event->xmotion.window == shell->recents"
+            )
+        ]
+        launcher_press = implementation[
+            implementation.index(
+                "event->type == ButtonPress && event->xbutton.window == shell->launcher"
+            ):
+            implementation.index(
+                "event->type == MotionNotify && event->xmotion.window == shell->launcher"
+            )
+        ]
+        self.assertIn("XGrabPointer", recents_press)
+        self.assertIn("shell->recents,\n            False", recents_press)
+        self.assertIn("XGrabPointer", launcher_press)
+        self.assertIn("shell->launcher,\n            False", launcher_press)
+        self.assertNotIn("layout.card_width + abs(offset)", implementation)
+        show_transition = implementation[
+            implementation.index("static void show_launch_transition"):
+            implementation.index("static void present_recents")
+        ]
+        self.assertNotIn("draw_launch_transition(shell)", show_transition)
+        self.assertIn("chrome_pressed_action", implementation)
         self.assertIn("role:notification-center", implementation)
         self.assertIn("org.msys.settings:main", implementation)
         self.assertIn("event->xexpose.width", implementation)

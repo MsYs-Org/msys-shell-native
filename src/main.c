@@ -26,12 +26,18 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.9"
+#define APP_VERSION "0.3.10"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define TOAST_VISIBLE_MS 2600u
+#define EXIT_TOAST_VISIBLE_MS 1100u
+#define TOAST_ANIMATION_FRAME_MS 85u
+#define TOAST_ANIMATION_FRAMES 3
 #define OVERVIEW_ACCENT_MS 240u
 #define TRANSITION_PULSE_MS 180u
+#define LAUNCH_TRANSITION_FRAME_MS 90u
+#define LAUNCH_TRANSITION_FRAMES 4
+#define LAUNCH_TRANSITION_MAX_MS 8000u
 #define TOAST_MAX_WIDTH 420
 #define IMAGE_FILE_LIMIT (4u * 1024u * 1024u)
 #define MAX_PENDING_CALLS 16u
@@ -188,6 +194,7 @@ typedef struct native_shell {
     Window navigation;
     Window recents;
     Window controls;
+    Window launch_transition;
     Window toast;
     Atom wm_delete;
     GC gc;
@@ -212,24 +219,30 @@ typedef struct native_shell {
     int recents_visible;
     int recents_mapped;
     int controls_visible;
+    int launch_transition_visible;
     int toast_visible;
     int buttons_mode;
     int navigation_vertical;
     int nav_feedback;
     enum msys_native_navigation_action nav_feedback_action;
     enum msys_native_navigation_action button_pressed_action;
+    int chrome_pressed_action;
     int chrome_second_valid;
     int clip_active;
     XRectangle clip;
     uint64_t nav_feedback_until_ms;
     uint64_t nav_interaction_until_ms;
     uint64_t toast_until_ms;
+    uint64_t toast_animation_at_ms;
     uint64_t overview_accent_until_ms;
     uint64_t launcher_pulse_until_ms;
     uint64_t recents_pulse_until_ms;
+    uint64_t launch_transition_animation_at_ms;
+    uint64_t launch_transition_until_ms;
     uint64_t next_request_id;
     time_t chrome_second;
     char toast_text[192];
+    char launch_transition_component[MSYS_NATIVE_COMPONENT_CAPACITY];
     char last_display_recovery[256];
     char locale[MSYS_I18N_LOCALE_CAPACITY];
     msys_native_app apps[MSYS_NATIVE_MAX_APPS];
@@ -282,6 +295,11 @@ typedef struct native_shell {
     int recents_height;
     int controls_width;
     int controls_height;
+    int launch_transition_width;
+    int launch_transition_height;
+    size_t launch_transition_app_index;
+    int launch_transition_frame;
+    int toast_animation_frame;
     native_image_cache app_icons[MSYS_NATIVE_MAX_APPS];
     native_image_cache task_previews[MSYS_NATIVE_MAX_TASKS];
     pending_call pending[MAX_PENDING_CALLS];
@@ -309,6 +327,7 @@ static void redraw_recents_viewport(
 static void redraw_controls_row(native_shell *shell, int index);
 static void request_audio_state(native_shell *shell);
 static const char *tr(native_shell *shell, const char *key);
+static void hide_launch_transition(native_shell *shell);
 
 static void handle_signal(int signal_number)
 {
@@ -323,6 +342,18 @@ static uint64_t now_ms(void)
         return 0u;
     }
     return value;
+}
+
+static int animation_frame_limit(int normal_frames)
+{
+    const char *reduced = getenv("MSYS_NATIVE_REDUCED_MOTION");
+    if (
+        reduced != NULL &&
+        (strcmp(reduced, "1") == 0 || strcmp(reduced, "true") == 0)
+    ) {
+        return 1;
+    }
+    return normal_frames;
 }
 
 static pending_call *pending_allocate(
@@ -1602,6 +1633,19 @@ static void draw_chrome(native_shell *shell)
         shell->display, shell->chrome, shell->gc, 0, 0,
         (unsigned int)attributes.width, (unsigned int)attributes.height
     );
+    if (shell->chrome_pressed_action == 1) {
+        fill_rounded(
+            shell, shell->chrome, 4, 3, 38u,
+            (unsigned int)(attributes.height > 6 ? attributes.height - 6 : 1),
+            12u, shell->surface_variant
+        );
+    } else if (shell->chrome_pressed_action == 2) {
+        fill_rounded(
+            shell, shell->chrome, attributes.width - 42, 3, 38u,
+            (unsigned int)(attributes.height > 6 ? attributes.height - 6 : 1),
+            12u, shell->surface_variant
+        );
+    }
     if (localtime_r(&current, &local_time) == NULL) {
         (void)snprintf(clock_text, sizeof(clock_text), "--:--:--");
         shell->chrome_second_valid = 0;
@@ -1638,6 +1682,31 @@ static void draw_chrome_clock_damage(native_shell *shell)
     begin_clip(shell, x, 0, width, attributes.height);
     draw_chrome(shell);
     end_clip(shell);
+}
+
+static void draw_chrome_action_damage(native_shell *shell, int action)
+{
+    XWindowAttributes attributes;
+    if (
+        action < 1 || action > 2 ||
+        !XGetWindowAttributes(shell->display, shell->chrome, &attributes)
+    ) return;
+    begin_clip(
+        shell,
+        action == 1 ? 0 : attributes.width - 48,
+        0,
+        48,
+        attributes.height
+    );
+    draw_chrome(shell);
+    end_clip(shell);
+}
+
+static int chrome_action_at(int x, int width)
+{
+    if (width <= 0 || x < 0 || x >= width) return 0;
+    if (x < width / 3) return 1;
+    return x >= width * 2 / 3 ? 2 : 0;
 }
 
 static void draw_navigation_symbol(
@@ -2244,6 +2313,15 @@ static void draw_toast(native_shell *shell)
         (unsigned int)attributes.width,
         (unsigned int)attributes.height
     );
+    if (shell->toast_animation_frame < animation_frame_limit(TOAST_ANIMATION_FRAMES)) {
+        int frames = animation_frame_limit(TOAST_ANIMATION_FRAMES);
+        int width = attributes.width * (shell->toast_animation_frame + 1) / frames;
+        set_foreground(shell, shell->accent);
+        XFillRectangle(
+            shell->display, shell->toast, shell->gc, 0, 0,
+            (unsigned int)(width > 0 ? width : 1), 4u
+        );
+    }
     draw_text(shell, shell->toast, 16, 30, "MSYS", shell->nav_pill);
     draw_text_ellipsized(
         shell,
@@ -2253,6 +2331,135 @@ static void draw_toast(native_shell *shell)
         attributes.width > 32 ? attributes.width - 32 : 1,
         shell->toast_text,
         shell->nav_pill
+    );
+}
+
+static void draw_toast_animation_damage(native_shell *shell)
+{
+    XWindowAttributes attributes;
+    if (!XGetWindowAttributes(shell->display, shell->toast, &attributes)) return;
+    begin_clip(shell, 0, 0, attributes.width, 6);
+    draw_toast(shell);
+    end_clip(shell);
+}
+
+static void launch_transition_geometry(
+    native_shell *shell,
+    int *x,
+    int *y,
+    int *width,
+    int *height
+)
+{
+    *width = shell->root_width - 24;
+    if (*width > 236) *width = 236;
+    if (*width < 1) *width = 1;
+    *height = shell->root_height - 24;
+    if (*height > 132) *height = 132;
+    if (*height < 1) *height = 1;
+    *x = (shell->root_width - *width) / 2;
+    *y = (shell->root_height - *height) / 2;
+}
+
+static void layout_launch_transition(native_shell *shell)
+{
+    XWindowAttributes attributes;
+    int x;
+    int y;
+    int width;
+    int height;
+    if (shell->launch_transition == None) return;
+    launch_transition_geometry(shell, &x, &y, &width, &height);
+    if (
+        XGetWindowAttributes(
+            shell->display, shell->launch_transition, &attributes
+        ) && attributes.x == x && attributes.y == y &&
+        attributes.width == width && attributes.height == height
+    ) return;
+    XMoveResizeWindow(
+        shell->display,
+        shell->launch_transition,
+        x,
+        y,
+        (unsigned int)width,
+        (unsigned int)height
+    );
+}
+
+static void draw_launch_transition(native_shell *shell)
+{
+    XWindowAttributes attributes;
+    size_t index = shell->launch_transition_app_index;
+    int icon = 64;
+    int icon_x;
+    int icon_y = 12;
+    int frame_limit = animation_frame_limit(LAUNCH_TRANSITION_FRAMES);
+    int pulse;
+    const char *name;
+    if (
+        index >= shell->app_count ||
+        !XGetWindowAttributes(
+            shell->display, shell->launch_transition, &attributes
+        )
+    ) return;
+    name = shell->apps[index].name;
+    set_foreground(
+        shell,
+        shell->launch_transition_frame == 0 ? shell->surface_variant : shell->surface
+    );
+    XFillRectangle(
+        shell->display, shell->launch_transition, shell->gc, 0, 0,
+        (unsigned int)attributes.width, (unsigned int)attributes.height
+    );
+    if (icon > attributes.height - 54) icon = attributes.height - 54;
+    if (icon > attributes.width - 30) icon = attributes.width - 30;
+    if (icon < 24) icon = 24;
+    icon_x = (attributes.width - icon) / 2;
+    if (!draw_cached_image(
+        shell,
+        shell->launch_transition,
+        &shell->app_icons[index],
+        shell->apps[index].icon_path,
+        icon_x,
+        icon_y,
+        icon,
+        icon
+    )) {
+        draw_fallback_icon(
+            shell, shell->launch_transition, icon_x, icon_y, icon, name
+        );
+    }
+    pulse = frame_limit > 1
+        ? shell->launch_transition_frame * 5 / (frame_limit - 1) : 0;
+    set_foreground(shell, shell->accent);
+    XSetLineAttributes(shell->display, shell->gc, 2u, LineSolid, CapRound, JoinRound);
+    XDrawRectangle(
+        shell->display,
+        shell->launch_transition,
+        shell->gc,
+        icon_x - 4 - pulse,
+        icon_y - 4 - pulse,
+        (unsigned int)(icon + 8 + pulse * 2),
+        (unsigned int)(icon + 8 + pulse * 2)
+    );
+    XSetLineAttributes(shell->display, shell->gc, 1u, LineSolid, CapButt, JoinMiter);
+    draw_text_ellipsized(
+        shell,
+        shell->launch_transition,
+        14,
+        attributes.height - 28,
+        attributes.width - 28,
+        name,
+        shell->foreground
+    );
+    draw_text_ellipsized(
+        shell,
+        shell->launch_transition,
+        14,
+        attributes.height - 9,
+        attributes.width - 28,
+        tr(shell, "launcher.starting"),
+        shell->muted
     );
 }
 
@@ -2268,6 +2475,8 @@ static void redraw(native_shell *shell, Window window)
         draw_recents(shell);
     } else if (window == shell->controls) {
         draw_controls(shell);
+    } else if (window == shell->launch_transition) {
+        draw_launch_transition(shell);
     } else if (window == shell->toast) {
         draw_toast(shell);
     }
@@ -2280,6 +2489,10 @@ static int initialize_x11(native_shell *shell)
     char *default_string = NULL;
     int width;
     int height;
+    int transition_x;
+    int transition_y;
+    int transition_width;
+    int transition_height;
     (void)setlocale(LC_ALL, "");
     (void)XSetLocaleModifiers("");
     shell->display = XOpenDisplay(NULL);
@@ -2391,11 +2604,36 @@ static int initialize_x11(native_shell *shell)
         NULL,
         0
     );
+    launch_transition_geometry(
+        shell,
+        &transition_x,
+        &transition_y,
+        &transition_width,
+        &transition_height
+    );
+    shell->launch_transition = create_window(
+        shell,
+        transition_x,
+        transition_y,
+        (unsigned int)transition_width,
+        (unsigned int)transition_height,
+        shell->surface,
+        "MSYS Launch Transition",
+        "org.msys.shell.native.launch-transition",
+        "animation-mask",
+        0
+    );
     {
         XSetWindowAttributes overlay_attributes;
         overlay_attributes.override_redirect = True;
         XChangeWindowAttributes(
             shell->display, shell->controls, CWOverrideRedirect, &overlay_attributes
+        );
+        XChangeWindowAttributes(
+            shell->display,
+            shell->launch_transition,
+            CWOverrideRedirect,
+            &overlay_attributes
         );
     }
     {
@@ -2520,11 +2758,24 @@ static void raise_system_bars(native_shell *shell)
     if (shell->toast_visible != 0) XRaiseWindow(shell->display, shell->toast);
 }
 
+static void hide_launch_transition(native_shell *shell)
+{
+    if (shell->launch_transition_visible == 0) return;
+    shell->launch_transition_visible = 0;
+    shell->launch_transition_frame = 0;
+    shell->launch_transition_animation_at_ms = 0u;
+    shell->launch_transition_until_ms = 0u;
+    shell->launch_transition_component[0] = '\0';
+    XUnmapWindow(shell->display, shell->launch_transition);
+}
+
 static void hide_toast(native_shell *shell)
 {
     if (shell->toast_visible == 0) return;
     shell->toast_visible = 0;
     shell->toast_until_ms = 0u;
+    shell->toast_animation_frame = 0;
+    shell->toast_animation_at_ms = 0u;
     XUnmapWindow(shell->display, shell->toast);
 }
 
@@ -2543,6 +2794,10 @@ static void hide_recents(native_shell *shell, int restore_task)
     shell->recents_pulse_until_ms = 0u;
     shell->recents_close_pressed = 0;
     shell->tasks_refresh_queued = 0;
+    if (shell->recents_pointer_active != 0) {
+        shell->recents_pointer_active = 0;
+        XUngrabPointer(shell->display, CurrentTime);
+    }
     XUnmapWindow(shell->display, shell->recents);
     image_caches_dispose(shell->task_previews, MSYS_NATIVE_MAX_TASKS);
     if (
@@ -2558,6 +2813,33 @@ static void hide_controls(native_shell *shell)
     shell->controls_pressed = -1;
     shell->controls_pressed_zone = -1;
     XUnmapWindow(shell->display, shell->controls);
+}
+
+static void show_launch_transition(native_shell *shell, size_t index)
+{
+    uint64_t current;
+    if (index >= shell->app_count) return;
+    current = now_ms();
+    hide_toast(shell);
+    hide_recents(shell, 0);
+    hide_controls(shell);
+    shell->launch_transition_visible = 1;
+    shell->launch_transition_app_index = index;
+    shell->launch_transition_frame = 0;
+    shell->launch_transition_animation_at_ms =
+        animation_frame_limit(LAUNCH_TRANSITION_FRAMES) > 1
+            ? current + LAUNCH_TRANSITION_FRAME_MS : 0u;
+    shell->launch_transition_until_ms = current + LAUNCH_TRANSITION_MAX_MS;
+    (void)snprintf(
+        shell->launch_transition_component,
+        sizeof(shell->launch_transition_component),
+        "%s",
+        shell->apps[index].component
+    );
+    layout_launch_transition(shell);
+    XMapRaised(shell->display, shell->launch_transition);
+    raise_system_bars(shell);
+    XFlush(shell->display);
 }
 
 static void present_recents(native_shell *shell)
@@ -2589,6 +2871,7 @@ static void refresh_recents_presentation(native_shell *shell)
 
 static void show_recents(native_shell *shell)
 {
+    hide_launch_transition(shell);
     hide_controls(shell);
     shell->recents_visible = 1;
     shell->recents_scroll = 0;
@@ -2608,6 +2891,7 @@ static void show_recents(native_shell *shell)
 
 static void show_controls(native_shell *shell)
 {
+    hide_launch_transition(shell);
     hide_recents(shell, 0);
     if (shell->controls_visible != 0) {
         hide_controls(shell);
@@ -2628,11 +2912,16 @@ static void hide_overlays(native_shell *shell, int restore_task)
 {
     hide_recents(shell, restore_task);
     hide_controls(shell);
+    hide_launch_transition(shell);
     hide_toast(shell);
     XFlush(shell->display);
 }
 
-static void show_toast(native_shell *shell, const char *message)
+static void show_toast_for(
+    native_shell *shell,
+    const char *message,
+    uint64_t duration_ms
+)
 {
     uint64_t current = now_ms();
     (void)snprintf(
@@ -2645,16 +2934,26 @@ static void show_toast(native_shell *shell, const char *message)
      * forever by extending the deadline on every notification. */
     if (shell->toast_visible == 0) {
         shell->toast_visible = 1;
-        shell->toast_until_ms = current + TOAST_VISIBLE_MS;
+        shell->toast_until_ms = current + duration_ms;
+        shell->toast_animation_frame = 0;
+        shell->toast_animation_at_ms =
+            animation_frame_limit(TOAST_ANIMATION_FRAMES) > 1
+                ? current + TOAST_ANIMATION_FRAME_MS : 0u;
     }
     XMapRaised(shell->display, shell->toast);
     draw_toast(shell);
     XFlush(shell->display);
 }
 
+static void show_toast(native_shell *shell, const char *message)
+{
+    show_toast_for(shell, message, TOAST_VISIBLE_MS);
+}
+
 static void show_notification_center(native_shell *shell)
 {
     if (pending_has_kind(shell, PENDING_NOTIFICATION_CENTER) != 0) return;
+    hide_launch_transition(shell);
     hide_controls(shell);
     if (send_async(
         shell,
@@ -2985,6 +3284,10 @@ static int window_payload(
 static void activate_app(native_shell *shell, size_t index)
 {
     char payload[MSYS_NATIVE_COMPONENT_CAPACITY * 2u + 32u];
+    if (pending_has_kind(shell, PENDING_APP_START) != 0) {
+        show_toast(shell, tr(shell, "error.busy"));
+        return;
+    }
     if (index >= shell->app_count || component_payload(
         shell->apps[index].component,
         payload,
@@ -2999,6 +3302,7 @@ static void activate_app(native_shell *shell, size_t index)
         tr(shell, "launcher.starting"),
         shell->apps[index].name
     );
+    show_launch_transition(shell, index);
     if (
         send_async(
             shell,
@@ -3011,6 +3315,7 @@ static void activate_app(native_shell *shell, size_t index)
             0
         ) == 0u
     ) {
+        hide_launch_transition(shell);
         (void)snprintf(shell->apps_message, sizeof(shell->apps_message), "%s", tr(shell, "error.busy"));
     }
     if (shell->apps_message[0] != '\0' && pending_has_kind(shell, PENDING_APP_START) == 0) {
@@ -3103,6 +3408,7 @@ static void send_navigation(native_shell *shell, enum msys_native_navigation_act
     if (action == MSYS_NATIVE_NAV_NONE) {
         return;
     }
+    hide_launch_transition(shell);
     if (
         action == MSYS_NATIVE_NAV_BACK &&
         (shell->recents_visible != 0 || shell->controls_visible != 0)
@@ -3721,6 +4027,7 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
                 request_recents(shell);
             }
         } else if (pending.kind == PENDING_APP_START) {
+            hide_launch_transition(shell);
             packet_error_text(packet, shell->apps_message, sizeof(shell->apps_message));
             show_toast(shell, shell->apps_message);
         } else if (
@@ -3782,6 +4089,7 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
         }
         break;
     case PENDING_APP_START:
+        hide_launch_transition(shell);
         if (payload_has_field(payload, "activation_error") != 0) {
             (void)snprintf(shell->apps_message, sizeof(shell->apps_message), "%s", tr(shell, "error.app_activation_failed"));
             show_toast(shell, shell->apps_message);
@@ -3871,6 +4179,21 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
     }
 }
 
+static const char *installed_app_name(
+    native_shell *shell,
+    const char *component
+)
+{
+    size_t index;
+    if (component == NULL || *component == '\0') return NULL;
+    for (index = 0u; index < shell->app_count; index++) {
+        if (strcmp(shell->apps[index].component, component) == 0) {
+            return shell->apps[index].name;
+        }
+    }
+    return NULL;
+}
+
 static void handle_event(native_shell *shell, const char *packet)
 {
     char topic[128];
@@ -3900,20 +4223,35 @@ static void handle_event(native_shell *shell, const char *packet)
     } else if (strcmp(topic, "msys.lifecycle.transition") == 0) {
         char phase[32];
         char component[MSYS_NATIVE_COMPONENT_CAPACITY];
+        char lifecycle_message[192];
+        const char *app_name;
         size_t index;
         int tracked = 0;
 
         if (
-            shell->recents_visible == 0 ||
             packet_payload(packet, payload, sizeof(payload)) == 0 ||
             msys_mipc_json_get_string(
                 payload, "phase", phase, sizeof(phase), NULL
             ) != MSYS_MIPC_OK ||
-            (strcmp(phase, "closed") != 0 && strcmp(phase, "failed") != 0) ||
             msys_mipc_json_get_string(
                 payload, "component", component, sizeof(component), NULL
             ) != MSYS_MIPC_OK
         ) {
+            return;
+        }
+        if (
+            shell->launch_transition_visible != 0 &&
+            strcmp(shell->launch_transition_component, component) == 0 &&
+            (
+                strcmp(phase, "ready") == 0 ||
+                strcmp(phase, "visible") == 0 ||
+                strcmp(phase, "closed") == 0 ||
+                strcmp(phase, "failed") == 0
+            )
+        ) {
+            hide_launch_transition(shell);
+        }
+        if (strcmp(phase, "closed") != 0 && strcmp(phase, "failed") != 0) {
             return;
         }
         for (index = 0u; index < shell->task_count; index++) {
@@ -3922,8 +4260,27 @@ static void handle_event(native_shell *shell, const char *packet)
                 break;
             }
         }
-        if (tracked != 0)
+        if (shell->recents_visible != 0 && tracked != 0) {
             request_recents(shell);
+            return;
+        }
+        app_name = installed_app_name(shell, component);
+        if (app_name != NULL) {
+            (void)snprintf(
+                lifecycle_message,
+                sizeof(lifecycle_message),
+                "%s · %s",
+                app_name,
+                tr(
+                    shell,
+                    strcmp(phase, "failed") == 0
+                        ? "lifecycle.failed" : "lifecycle.closed"
+                )
+            );
+            show_toast_for(
+                shell, lifecycle_message, EXIT_TOAST_VISIBLE_MS
+            );
+        }
     }
 }
 
@@ -3979,6 +4336,9 @@ static int surface_size_changed(native_shell *shell, Window window, int width, i
     } else if (window == shell->controls) {
         stored_width = &shell->controls_width;
         stored_height = &shell->controls_height;
+    } else if (window == shell->launch_transition) {
+        stored_width = &shell->launch_transition_width;
+        stored_height = &shell->launch_transition_height;
     }
     if (stored_width == NULL || stored_height == NULL) return 0;
     if (*stored_width == width && *stored_height == height) return 0;
@@ -4237,6 +4597,7 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                     shell->display, shell->controls, 0, 0,
                     (unsigned int)shell->root_width, (unsigned int)shell->root_height
                 );
+                layout_launch_transition(shell);
                 {
                     int toast_width = shell->root_width > 20 ? shell->root_width - 20 : 1;
                     int toast_x;
@@ -4260,7 +4621,11 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         )) {
             if (
                 (event->xconfigure.window != shell->recents || shell->recents_visible != 0) &&
-                (event->xconfigure.window != shell->controls || shell->controls_visible != 0)
+                (event->xconfigure.window != shell->controls || shell->controls_visible != 0) &&
+                (
+                    event->xconfigure.window != shell->launch_transition ||
+                    shell->launch_transition_visible != 0
+                )
             ) redraw(shell, event->xconfigure.window);
         }
         return;
@@ -4272,7 +4637,27 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         shell->running = 0;
         return;
     }
-    if (event->type == ButtonPress && event->xbutton.window == shell->navigation) {
+    if (event->type == ButtonPress && event->xbutton.window == shell->chrome) {
+        XWindowAttributes attributes;
+        if (!XGetWindowAttributes(shell->display, shell->chrome, &attributes)) return;
+        shell->chrome_pressed_action = chrome_action_at(
+            event->xbutton.x, attributes.width
+        );
+        if (shell->chrome_pressed_action != 0) {
+            (void)XGrabPointer(
+                shell->display,
+                shell->chrome,
+                False,
+                PointerMotionMask | ButtonReleaseMask,
+                GrabModeAsync,
+                GrabModeAsync,
+                None,
+                None,
+                CurrentTime
+            );
+            draw_chrome_action_damage(shell, shell->chrome_pressed_action);
+        }
+    } else if (event->type == ButtonPress && event->xbutton.window == shell->navigation) {
         if (shell->nav_feedback != 0) {
             enum msys_native_navigation_action old_feedback = shell->nav_feedback_action;
             shell->nav_feedback = 0;
@@ -4410,6 +4795,17 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         shell->recents_drag_start_x = event->xbutton.x;
         shell->recents_drag_start_y = event->xbutton.y;
         shell->recents_drag_start_scroll = shell->recents_scroll;
+        (void)XGrabPointer(
+            shell->display,
+            shell->recents,
+            False,
+            PointerMotionMask | ButtonReleaseMask,
+            GrabModeAsync,
+            GrabModeAsync,
+            None,
+            None,
+            CurrentTime
+        );
         if (msys_native_recents_exit_hit(
             event->xbutton.x,
             event->xbutton.y,
@@ -4465,28 +4861,12 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             shell->recents_pressed >= 0 && abs(delta_x) > abs(delta_y) + 6 &&
             abs(delta_x) > 8
         ) {
-            int card_x;
-            int card_y;
-            int old_offset = shell->recents_drag_offset;
-            int left;
-            int width;
             shell->recents_horizontal_drag = 1;
             shell->recents_dragging = 1;
             if (delta_x > layout.card_width) delta_x = layout.card_width;
             if (delta_x < -layout.card_width) delta_x = -layout.card_width;
             shell->recents_drag_offset = delta_x;
-            recents_card_rect(
-                &layout, shell->recents_scroll, (size_t)shell->recents_pressed,
-                &card_x, &card_y
-            );
-            left = card_x + (old_offset < delta_x ? old_offset : delta_x) - 3;
-            width = layout.card_width + abs(delta_x - old_offset) + 6;
-            redraw_recents_damage(
-                shell, &attributes, &layout,
-                left, card_y - 3, width, layout.card_height + 6
-            );
         } else if (shell->recents_horizontal_drag == 0 && abs(delta_y) > 8) {
-            int old_scroll = shell->recents_scroll;
             shell->recents_dragging = 1;
             shell->recents_pressed = -1;
             shell->recents_scroll = msys_native_scroll_clamp(
@@ -4494,12 +4874,6 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                 layout.content_height,
                 layout.viewport_height
             );
-            if (shell->recents_scroll != old_scroll) {
-                /* Scrolling changes the card pixels, not just the indicator.
-                 * Limit the unavoidable redraw to the content viewport; the
-                 * header, system bars, and the rest of the root stay clean. */
-                redraw_recents_viewport(shell, &attributes, &layout);
-            }
         }
     } else if (event->type == ButtonRelease && event->xbutton.window == shell->recents) {
         XWindowAttributes attributes;
@@ -4512,7 +4886,16 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         int same_card = 0;
         int close_released = 0;
         size_t released_index = 0u;
-        if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) return;
+        XUngrabPointer(shell->display, CurrentTime);
+        if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) {
+            shell->recents_pointer_active = 0;
+            shell->recents_dragging = 0;
+            shell->recents_horizontal_drag = 0;
+            shell->recents_drag_offset = 0;
+            shell->recents_pressed = -1;
+            shell->recents_close_pressed = 0;
+            return;
+        }
         recents_layout(shell, attributes.width, attributes.height, &layout);
         recents_surface_insets(
             shell, attributes.width, attributes.height, &top, &right, &bottom
@@ -4558,44 +4941,18 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             shell->recents_horizontal_drag != 0 && pressed >= 0 &&
             abs(shell->recents_drag_offset) >= layout.card_width / 3
         ) {
-            int card_x;
-            int card_y;
-            int offset = shell->recents_drag_offset;
-            recents_card_rect(
-                &layout, shell->recents_scroll, (size_t)pressed, &card_x, &card_y
-            );
             shell->recents_horizontal_drag = 0;
             shell->recents_drag_offset = 0;
             shell->recents_pressed = -1;
             shell->recents_pulse = pressed;
             shell->recents_pulse_until_ms = current + TRANSITION_PULSE_MS;
-            redraw_recents_damage(
-                shell,
-                &attributes,
-                &layout,
-                card_x + (offset < 0 ? offset : 0) - 3,
-                card_y - 3,
-                layout.card_width + abs(offset) + 6,
-                layout.card_height + 6
-            );
+            redraw_recents_card(shell, (size_t)pressed);
             close_task(shell, (size_t)pressed);
         } else if (shell->recents_horizontal_drag != 0 && pressed >= 0) {
-            int card_x;
-            int card_y;
-            int offset = shell->recents_drag_offset;
-            recents_card_rect(&layout, shell->recents_scroll, (size_t)pressed, &card_x, &card_y);
             shell->recents_drag_offset = 0;
             shell->recents_horizontal_drag = 0;
             shell->recents_pressed = -1;
-            redraw_recents_damage(
-                shell,
-                &attributes,
-                &layout,
-                card_x + (offset < 0 ? offset : 0) - 3,
-                card_y - 3,
-                layout.card_width + abs(offset) + 6,
-                layout.card_height + 6
-            );
+            redraw_recents_card(shell, (size_t)pressed);
         } else if (shell->recents_dragging != 0) {
             redraw_recents_viewport(shell, &attributes, &layout);
         } else if (pressed >= 0 && (size_t)pressed < shell->task_count) {
@@ -4639,6 +4996,17 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         shell->launcher_drag_start_y = event->xbutton.y;
         shell->launcher_drag_start_scroll = shell->launcher_scroll;
         shell->launcher_pressed = -1;
+        (void)XGrabPointer(
+            shell->display,
+            shell->launcher,
+            False,
+            PointerMotionMask | ButtonReleaseMask,
+            GrabModeAsync,
+            GrabModeAsync,
+            None,
+            None,
+            CurrentTime
+        );
         if (msys_native_grid_hit(
             event->xbutton.x,
             event->xbutton.y,
@@ -4659,9 +5027,7 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         int delta = shell->launcher_drag_start_y - event->xmotion.y;
         if (abs(delta) > 8 && XGetWindowAttributes(shell->display, shell->launcher, &attributes)) {
             if (shell->launcher_dragging == 0 && shell->launcher_pressed >= 0) {
-                size_t old_pressed = (size_t)shell->launcher_pressed;
                 shell->launcher_pressed = -1;
-                redraw_launcher_cell(shell, old_pressed);
             }
             launcher_grid(shell, attributes.width, attributes.height, &grid);
             shell->launcher_dragging = 1;
@@ -4670,7 +5036,6 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                 grid.content_height,
                 grid.viewport_height
             );
-            redraw_launcher_viewport(shell, &attributes, &grid);
         }
     } else if (event->type == ButtonRelease && event->xbutton.window == shell->launcher) {
         XWindowAttributes attributes;
@@ -4678,6 +5043,7 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         size_t released_index;
         int pressed = shell->launcher_pressed;
         int same = 0;
+        XUngrabPointer(shell->display, CurrentTime);
         if (!XGetWindowAttributes(shell->display, shell->launcher, &attributes)) {
             shell->launcher_pressed = -1;
             shell->launcher_pointer_active = 0;
@@ -4704,11 +5070,40 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             redraw_launcher_cell(shell, (size_t)pressed);
             activate_app(shell, (size_t)pressed);
         }
-    } else if (event->type == ButtonRelease && event->xbutton.window == shell->chrome) {
+    } else if (
+        event->type == ButtonRelease && shell->chrome_pressed_action != 0
+    ) {
         XWindowAttributes attributes;
-        if (!XGetWindowAttributes(shell->display, shell->chrome, &attributes)) return;
-        if (event->xbutton.x < attributes.width / 3) show_notification_center(shell);
-        else if (event->xbutton.x >= attributes.width * 2 / 3) show_controls(shell);
+        Window ignored = None;
+        int local_x = event->xbutton.x;
+        int local_y = event->xbutton.y;
+        int pressed = shell->chrome_pressed_action;
+        int released = 0;
+        if (event->xbutton.window != shell->chrome) {
+            (void)XTranslateCoordinates(
+                shell->display,
+                shell->root,
+                shell->chrome,
+                event->xbutton.x_root,
+                event->xbutton.y_root,
+                &local_x,
+                &local_y,
+                &ignored
+            );
+        }
+        if (
+            XGetWindowAttributes(shell->display, shell->chrome, &attributes) &&
+            local_y >= 0 && local_y < attributes.height
+        ) {
+            released = chrome_action_at(local_x, attributes.width);
+        }
+        shell->chrome_pressed_action = 0;
+        XUngrabPointer(shell->display, CurrentTime);
+        draw_chrome_action_damage(shell, pressed);
+        if (released == pressed) {
+            if (released == 1) show_notification_center(shell);
+            else if (released == 2) show_controls(shell);
+        }
     } else if (event->type == ButtonPress && event->xbutton.window == shell->controls) {
         shell->controls_pressed = controls_hit(shell, event->xbutton.x, event->xbutton.y);
         shell->controls_pressed_zone = shell->controls_pressed == AUDIO_CONTROL_ROW
@@ -4791,6 +5186,42 @@ static void periodic(native_shell *shell)
         hide_toast(shell);
         visual_change = 1;
     }
+    if (
+        shell->toast_visible != 0 &&
+        shell->toast_animation_at_ms != 0u &&
+        current >= shell->toast_animation_at_ms
+    ) {
+        int frame_limit = animation_frame_limit(TOAST_ANIMATION_FRAMES);
+        if (shell->toast_animation_frame < frame_limit) {
+            shell->toast_animation_frame++;
+            draw_toast_animation_damage(shell);
+            visual_change = 1;
+        }
+        shell->toast_animation_at_ms =
+            shell->toast_animation_frame < frame_limit
+                ? current + TOAST_ANIMATION_FRAME_MS : 0u;
+    }
+    if (
+        shell->launch_transition_visible != 0 &&
+        current >= shell->launch_transition_until_ms
+    ) {
+        hide_launch_transition(shell);
+        visual_change = 1;
+    } else if (
+        shell->launch_transition_visible != 0 &&
+        shell->launch_transition_animation_at_ms != 0u &&
+        current >= shell->launch_transition_animation_at_ms
+    ) {
+        int frame_limit = animation_frame_limit(LAUNCH_TRANSITION_FRAMES);
+        if (shell->launch_transition_frame + 1 < frame_limit) {
+            shell->launch_transition_frame++;
+            draw_launch_transition(shell);
+            visual_change = 1;
+        }
+        shell->launch_transition_animation_at_ms =
+            shell->launch_transition_frame + 1 < frame_limit
+                ? current + LAUNCH_TRANSITION_FRAME_MS : 0u;
+    }
     if (shell->recents_mapped != 0 && current < shell->overview_accent_until_ms) {
         XWindowAttributes attributes;
         int top = 0;
@@ -4867,7 +5298,10 @@ static void periodic(native_shell *shell)
             }
             (void)snprintf(shell->apps_message, sizeof(shell->apps_message), "%s", tr(shell, "error.request_timeout"));
             if (expired.kind == PENDING_APPS_LIST) draw_launcher(shell);
-            else show_toast(shell, shell->apps_message);
+            else {
+                hide_launch_transition(shell);
+                show_toast(shell, shell->apps_message);
+            }
             visual_change = 1;
             if (
                 expired.kind == PENDING_APPS_LIST &&

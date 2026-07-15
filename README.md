@@ -1,6 +1,6 @@
 # MSYS Native Shell
 
-Current source version: `0.3.9`.
+Current source version: `0.3.10`.
 
 This is a lean adaptive X11 shell, implemented as one C process using Xlib
 and the dependency-free JSON mIPC C SDK. This repository supplies the shell
@@ -67,6 +67,16 @@ terminal `closed`/`failed` lifecycle event refreshes a visible Overview through
 one coalesced request. Closing a card follows the same path, clamps the scroll
 offset after reflow, and clears the union of old/new card pixels inside the
 task viewport rather than damaging the system bars.
+
+Launching an app maps one compact internal `animation-mask` surface before the
+asynchronous Core call. It reuses the launcher's cached icon and localized app
+name, renders at most four 90ms pulse frames, then remains static until Core
+reports ready/failure or the bounded request expires. It is not a replaceable
+`transition-presenter` role provider. `MSYS_NATIVE_REDUCED_MOTION=1` collapses
+finite shell animations to their first frame. Launcher and Overview drags are
+release-only for content: motion records the latest logical position without
+painting, and release damages the final viewport once, avoiding large SPI
+bounding boxes during touch movement.
 
 `get_preferences` and its `status` alias return the versioned launcher
 preference state. `set_preferences` strictly merges one or more bounded fields,
