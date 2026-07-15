@@ -37,6 +37,33 @@ class XSetWindowAttributes(ctypes.Structure):
     ]
 
 
+class XButtonEvent(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("serial", ctypes.c_ulong),
+        ("send_event", ctypes.c_int),
+        ("display", ctypes.c_void_p),
+        ("window", ctypes.c_ulong),
+        ("root", ctypes.c_ulong),
+        ("subwindow", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("x", ctypes.c_int),
+        ("y", ctypes.c_int),
+        ("x_root", ctypes.c_int),
+        ("y_root", ctypes.c_int),
+        ("state", ctypes.c_uint),
+        ("button", ctypes.c_uint),
+        ("same_screen", ctypes.c_int),
+    ]
+
+
+class XEvent(ctypes.Union):
+    _fields_ = [
+        ("xbutton", XButtonEvent),
+        ("pad", ctypes.c_long * 24),
+    ]
+
+
 class X11StackFixture:
     """Own real X11 windows so Overview tests the server stack, not map state."""
 
@@ -362,6 +389,120 @@ def debug_cross_surface_swipe(
         if pressed:
             xtst.XTestFakeButtonEvent(display, 1, 0, 0)
             x11.XFlush(display)
+        x11.XCloseDisplay(display)
+
+
+def debug_foreign_release_digest(
+    press_title: str,
+    press_x: int,
+    press_y: int,
+    release_title: str,
+    release_x: int,
+    release_y: int,
+) -> bytes:
+    """Inject a release from another selected surface while Button1 is held.
+
+    Real touch drivers and an X server grab race can report the terminal event
+    with a different ``event.window``.  XSendEvent makes that case deterministic
+    without weakening the production grab.  The returned digest is sampled
+    before the physical Button1 release, so stale pressed feedback is visible.
+    """
+
+    press_frame_x, press_frame_y, press_width, press_height = window_frame(
+        press_title
+    )
+    release_frame_x, release_frame_y, release_width, release_height = window_frame(
+        release_title
+    )
+    if not 0 <= press_x < press_width or not 0 <= press_y < press_height:
+        raise RuntimeError(
+            f"foreign release press outside {press_title}: "
+            f"{(press_x, press_y, press_width, press_height)}"
+        )
+    if not 0 <= release_x < release_width or not 0 <= release_y < release_height:
+        raise RuntimeError(
+            f"foreign release target outside {release_title}: "
+            f"{(release_x, release_y, release_width, release_height)}"
+        )
+
+    x11 = ctypes.CDLL("libX11.so.6")
+    xtst = ctypes.CDLL("libXtst.so.6")
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XDefaultScreen.argtypes = [ctypes.c_void_p]
+    x11.XDefaultScreen.restype = ctypes.c_int
+    x11.XRootWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    x11.XRootWindow.restype = ctypes.c_ulong
+    x11.XSendEvent.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.c_int,
+        ctypes.c_long,
+        ctypes.POINTER(XEvent),
+    ]
+    x11.XSendEvent.restype = ctypes.c_int
+    x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    xtst.XTestFakeMotionEvent.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+    xtst.XTestFakeButtonEvent.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+
+    display = x11.XOpenDisplay(os.environ["DISPLAY"].encode("ascii"))
+    if not display:
+        raise RuntimeError("cannot open X display for foreign release")
+    pressed = False
+    try:
+        root = int(x11.XRootWindow(display, x11.XDefaultScreen(display)))
+        if not xtst.XTestFakeMotionEvent(
+            display, -1, press_frame_x + press_x, press_frame_y + press_y, 0
+        ):
+            raise RuntimeError("foreign release initial motion failed")
+        if not xtst.XTestFakeButtonEvent(display, 1, 1, 0):
+            raise RuntimeError("foreign release button press failed")
+        pressed = True
+        x11.XSync(display, 0)
+        time.sleep(0.08)
+
+        event = XEvent()
+        event.xbutton.type = 5  # ButtonRelease
+        event.xbutton.send_event = 1
+        event.xbutton.display = display
+        event.xbutton.window = window_id(release_title)
+        event.xbutton.root = root
+        event.xbutton.subwindow = 0
+        event.xbutton.time = 0
+        event.xbutton.x = release_x
+        event.xbutton.y = release_y
+        event.xbutton.x_root = release_frame_x + release_x
+        event.xbutton.y_root = release_frame_y + release_y
+        event.xbutton.state = 1 << 8  # Button1Mask
+        event.xbutton.button = 1
+        event.xbutton.same_screen = 1
+        if not x11.XSendEvent(
+            display,
+            event.xbutton.window,
+            0,
+            1 << 3,  # ButtonReleaseMask
+            ctypes.byref(event),
+        ):
+            raise RuntimeError("foreign release XSendEvent failed")
+        x11.XSync(display, 0)
+        time.sleep(0.08)
+        return window_pixel_digest(press_title)
+    finally:
+        if pressed:
+            xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+            x11.XSync(display, 0)
         x11.XCloseDisplay(display)
 
 
@@ -1030,6 +1171,26 @@ def main() -> int:
             if not wait_window_viewable("MSYS Recents"):
                 raise RuntimeError("Overview did not map before its Exit action")
             exit_width, _exit_height = window_geometry("MSYS Recents")
+            # Approximate a touch/grab race where the release is selected on
+            # the navigation surface.  It must cancel the Exit press and clear
+            # its feedback even though event.window is no longer Recents.
+            time.sleep(0.3)
+            exit_idle = window_pixel_digest("MSYS Recents")
+            foreign_release = debug_foreign_release_digest(
+                "MSYS Recents",
+                exit_width - 30,
+                30,
+                "MSYS Navigation",
+                nav_width // 2,
+                nav_height // 2,
+            )
+            if foreign_release != exit_idle:
+                raise RuntimeError(
+                    "cross-surface Exit release left pressed feedback behind"
+                )
+            if not window_is_viewable("MSYS Recents"):
+                raise RuntimeError("cross-surface Exit release hid Overview")
+            assert_no_outbound_call(parent, "msys.core", "start")
             debug_input(
                 "--debug-swipe-identity",
                 "org.msys.shell.task-switcher",

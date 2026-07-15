@@ -1,6 +1,6 @@
 # MSYS Native Shell
 
-Current source version: `0.3.11`.
+Current source version: `0.3.12`.
 
 This is a lean adaptive X11 shell, implemented as one C process using Xlib
 and the dependency-free JSON mIPC C SDK. This repository supplies the shell

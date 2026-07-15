@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.11"
+#define APP_VERSION "0.3.12"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define TOAST_VISIBLE_MS 2600u
@@ -4894,17 +4894,38 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                 redraw_recents_viewport(shell, &attributes, &layout);
             }
         }
-    } else if (event->type == ButtonRelease && event->xbutton.window == shell->recents) {
+    } else if (
+        event->type == ButtonRelease && shell->recents_pointer_active != 0
+    ) {
         XWindowAttributes attributes;
         msys_native_recents_layout layout;
         int pressed = shell->recents_pressed;
         int top = 0;
         int right = 0;
         int bottom = 0;
+        int local_x = event->xbutton.x;
+        int local_y = event->xbutton.y;
         int exit_released;
         int same_card = 0;
         int close_released = 0;
         size_t released_index = 0u;
+        Window ignored = None;
+        if (event->xbutton.window != shell->recents) {
+            if (XTranslateCoordinates(
+                shell->display,
+                shell->root,
+                shell->recents,
+                event->xbutton.x_root,
+                event->xbutton.y_root,
+                &local_x,
+                &local_y,
+                &ignored
+            ) == 0) {
+                /* Translation failure is a cancelled release, never a click. */
+                local_x = -1;
+                local_y = -1;
+            }
+        }
         XUngrabPointer(shell->display, CurrentTime);
         if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) {
             shell->recents_pointer_active = 0;
@@ -4920,8 +4941,8 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             shell, attributes.width, attributes.height, &top, &right, &bottom
         );
         exit_released = msys_native_recents_exit_hit(
-            event->xbutton.x,
-            event->xbutton.y,
+            local_x,
+            local_y,
             attributes.width,
             top,
             right,
@@ -4931,8 +4952,8 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             int card_x;
             int card_y;
             same_card = msys_native_recents_hit(
-                event->xbutton.x,
-                event->xbutton.y,
+                local_x,
+                local_y,
                 shell->recents_scroll,
                 &layout,
                 shell->task_count,
@@ -4942,8 +4963,8 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                 &layout, shell->recents_scroll, (size_t)pressed, &card_x, &card_y
             );
             close_released = msys_native_recents_close_hit(
-                event->xbutton.x,
-                event->xbutton.y,
+                local_x,
+                local_y,
                 card_x,
                 card_y,
                 &layout
