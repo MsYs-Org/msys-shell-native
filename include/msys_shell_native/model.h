@@ -169,6 +169,15 @@ void msys_native_recents_compute(
 
 int msys_native_scroll_clamp(int requested, int content_height, int viewport_height);
 
+/* Decide whether a changed logical drag position may be presented now. */
+int msys_native_drag_frame_due(
+    int scroll,
+    int presented_scroll,
+    uint64_t now_ms,
+    uint64_t deadline_ms,
+    int force
+);
+
 int msys_native_grid_hit(
     int x,
     int y,

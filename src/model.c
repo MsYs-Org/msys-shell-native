@@ -268,6 +268,19 @@ int msys_native_scroll_clamp(int requested, int content_height, int viewport_hei
     return bounded(requested, 0, maximum);
 }
 
+int msys_native_drag_frame_due(
+    int scroll,
+    int presented_scroll,
+    uint64_t now_ms,
+    uint64_t deadline_ms,
+    int force
+)
+{
+    if (scroll == presented_scroll) return 0;
+    if (force != 0 || deadline_ms == 0u) return 1;
+    return now_ms >= deadline_ms;
+}
+
 static int layout_hit(
     int x,
     int y,

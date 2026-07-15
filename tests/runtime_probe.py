@@ -446,7 +446,9 @@ def debug_cross_surface_swipe(
     start_y: int,
     end_root_x: int,
     end_root_y: int,
-) -> None:
+    *,
+    capture_midpoint: bool = False,
+) -> bytes | None:
     """Start inside a shell surface and release over a different X11 window."""
     frame_x, frame_y, width, height = window_frame(title)
     if not 0 <= start_x < width or not 0 <= start_y < height:
@@ -477,6 +479,7 @@ def debug_cross_surface_swipe(
     if not display:
         raise RuntimeError("cannot open X display for cross-surface swipe")
     pressed = False
+    midpoint = None
     try:
         root_start_x = frame_x + start_x
         root_start_y = frame_y + start_y
@@ -494,6 +497,11 @@ def debug_cross_surface_swipe(
             if not xtst.XTestFakeMotionEvent(display, -1, x, y, 0):
                 raise RuntimeError("cross-surface motion failed")
             x11.XFlush(display)
+            if capture_midpoint and step == 4:
+                # Hold long enough for the bounded drag-frame deadline, then
+                # sample before ButtonRelease can submit a final frame.
+                time.sleep(0.12)
+                midpoint = window_pixel_digest(title)
             time.sleep(0.03)
         if not xtst.XTestFakeButtonEvent(display, 1, 0, 0):
             raise RuntimeError("cross-surface button release failed")
@@ -504,6 +512,7 @@ def debug_cross_surface_swipe(
             xtst.XTestFakeButtonEvent(display, 1, 0, 0)
             x11.XFlush(display)
         x11.XCloseDisplay(display)
+    return midpoint
 
 
 def debug_foreign_release_digest(
@@ -1146,13 +1155,18 @@ def main() -> int:
                 "MSYS Chrome"
             )
             before_cross_surface_release = window_pixel_digest("MSYS Recents")
-            debug_cross_surface_swipe(
+            midpoint_scroll = debug_cross_surface_swipe(
                 "MSYS Recents",
                 width // 2,
                 max(40, height - 36),
                 chrome_x + chrome_width // 2,
                 chrome_y + chrome_height // 2,
+                capture_midpoint=True,
             )
+            if midpoint_scroll is None or midpoint_scroll == before_cross_surface_release:
+                raise RuntimeError(
+                    "Overview content did not visibly follow drag before release"
+                )
             time.sleep(0.08)
             if not window_is_viewable("MSYS Recents"):
                 raise RuntimeError("multi-task scroll dismissed Overview")

@@ -1,6 +1,11 @@
 # MSYS Native Shell
 
-Current source version: `0.3.18`.
+Current source version: `0.3.19`.
+
+Version 0.3.19 makes Launcher and Recents content follow vertical touch drags
+again. The first changed position is immediate, later viewport frames are
+coalesced to one atomic presentation per 80ms, and release only submits a final
+position which was not already visible. Clamped drags remain viewport no-ops.
 
 Version 0.3.18 removes content-viewport painting from Launcher and Recents
 drag motion. Motion updates only the 12-pixel scroll-indicator strip; release
@@ -96,12 +101,13 @@ asynchronous Core call. It reuses the launcher's cached icon and localized app
 name, renders at most four 90ms pulse frames, then remains static until Core
 reports ready/failure or the bounded request expires. It is not a replaceable
 `transition-presenter` role provider. `MSYS_NATIVE_REDUCED_MOTION=1` collapses
-finite shell animations to their first frame. Launcher and Overview drags are
-release-only for content: motion records the latest logical position and
-damages only the narrow scroll-indicator strip. Release atomically damages the
-final viewport at most once; a clamped drag performs no viewport damage. This
-avoids clear/content intermediate frames and repeated large SPI bounding boxes
-during touch movement without changing the CH347 dirty-box implementation.
+finite shell animations to their first frame. Launcher and Overview content
+follows drag motion through atomic, rate-limited viewport frames: the first
+changed position is immediate, queued motion collapses to the latest position
+at an 80ms cadence, and release paints only an unpresented final position. A
+clamped drag performs no viewport damage. This avoids clear/content
+intermediate frames and unbounded MotionNotify repaint bursts without changing
+the CH347 dirty-box implementation.
 
 `get_preferences` and its `status` alias return the versioned launcher
 preference state. `set_preferences` strictly merges one or more bounded fields,

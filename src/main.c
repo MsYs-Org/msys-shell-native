@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.18"
+#define APP_VERSION "0.3.19"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8
@@ -50,6 +50,7 @@
 #define AUDIO_EDGE_ZONE_DIVISOR 5
 #define WIFI_REFRESH_INTERVAL_MS 10000u
 #define WIFI_STATE_TIMEOUT_MS 5000u
+#define DRAG_FRAME_MS 80u
 
 enum catalog_state {
     CATALOG_LOADING = 0,
@@ -267,7 +268,9 @@ typedef struct native_shell {
     int launcher_drag_start_scroll;
     int launcher_dragging;
     int launcher_pointer_active;
-    int launcher_scroll_changed;
+    int launcher_presented_scroll;
+    int launcher_redraw_pending;
+    uint64_t launcher_redraw_at_ms;
     int launcher_pressed;
     int launcher_pulse;
     int recents_scroll;
@@ -276,7 +279,9 @@ typedef struct native_shell {
     int recents_drag_start_scroll;
     int recents_dragging;
     int recents_pointer_active;
-    int recents_scroll_changed;
+    int recents_presented_scroll;
+    int recents_redraw_pending;
+    uint64_t recents_redraw_at_ms;
     int recents_horizontal_drag;
     int recents_drag_offset;
     int recents_pressed;
@@ -4813,77 +4818,56 @@ static void end_atomic_presentation(native_shell *shell)
     XFlush(shell->display);
 }
 
-static int commit_launcher_drag_viewport(native_shell *shell)
+static int present_launcher_drag_frame(
+    native_shell *shell,
+    uint64_t current,
+    int force
+)
 {
     XWindowAttributes attributes;
     msys_native_grid_layout grid;
     if (!XGetWindowAttributes(shell->display, shell->launcher, &attributes)) return 0;
     launcher_grid(shell, attributes.width, attributes.height, &grid);
+    if (!msys_native_drag_frame_due(
+        shell->launcher_scroll,
+        shell->launcher_presented_scroll,
+        current,
+        shell->launcher_redraw_at_ms,
+        force
+    )) return 0;
     begin_atomic_presentation(shell);
     redraw_launcher_viewport(shell, &attributes, &grid);
     end_atomic_presentation(shell);
+    shell->launcher_presented_scroll = shell->launcher_scroll;
+    shell->launcher_redraw_pending = 0;
+    shell->launcher_redraw_at_ms = current + DRAG_FRAME_MS;
     return 1;
 }
 
-static int commit_recents_drag_viewport(native_shell *shell)
+static int present_recents_drag_frame(
+    native_shell *shell,
+    uint64_t current,
+    int force
+)
 {
     XWindowAttributes attributes;
     msys_native_recents_layout layout;
     if (!XGetWindowAttributes(shell->display, shell->recents, &attributes)) return 0;
     recents_layout(shell, attributes.width, attributes.height, &layout);
+    if (!msys_native_drag_frame_due(
+        shell->recents_scroll,
+        shell->recents_presented_scroll,
+        current,
+        shell->recents_redraw_at_ms,
+        force
+    )) return 0;
     begin_atomic_presentation(shell);
     redraw_recents_viewport(shell, &attributes, &layout);
     end_atomic_presentation(shell);
+    shell->recents_presented_scroll = shell->recents_scroll;
+    shell->recents_redraw_pending = 0;
+    shell->recents_redraw_at_ms = current + DRAG_FRAME_MS;
     return 1;
-}
-
-static void redraw_launcher_scroll_damage(
-    native_shell *shell,
-    const XWindowAttributes *attributes,
-    const msys_native_grid_layout *grid
-)
-{
-    int left;
-    if (attributes == NULL || grid == NULL) return;
-    left = attributes->width > 12 ? attributes->width - 12 : 0;
-    begin_clip(
-        shell,
-        left,
-        grid->top,
-        attributes->width - left,
-        grid->viewport_height
-    );
-    draw_launcher(shell);
-    end_clip(shell);
-}
-
-static void redraw_recents_scroll_damage(
-    native_shell *shell,
-    const XWindowAttributes *attributes,
-    const msys_native_recents_layout *layout
-)
-{
-    int top = 0;
-    int right = 0;
-    int bottom = 0;
-    int left;
-    if (attributes == NULL || layout == NULL) return;
-    recents_surface_insets(
-        shell, attributes->width, attributes->height, &top, &right, &bottom
-    );
-    left = attributes->width - right - 12;
-    if (left < 0) left = 0;
-    begin_clip(
-        shell,
-        left,
-        layout->top,
-        attributes->width - right - left,
-        layout->viewport_height
-    );
-    draw_recents(shell);
-    end_clip(shell);
-    (void)top;
-    (void)bottom;
 }
 
 static void redraw_recents_exit_damage(native_shell *shell)
@@ -5272,7 +5256,9 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         shell->recents_drag_start_x = event->xbutton.x;
         shell->recents_drag_start_y = event->xbutton.y;
         shell->recents_drag_start_scroll = shell->recents_scroll;
-        shell->recents_scroll_changed = 0;
+        shell->recents_presented_scroll = shell->recents_scroll;
+        shell->recents_redraw_pending = 0;
+        shell->recents_redraw_at_ms = 0u;
         (void)XGrabPointer(
             shell->display,
             shell->recents,
@@ -5360,7 +5346,6 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                 left, card_y - 3, width, layout.card_height + 6
             );
         } else if (shell->recents_horizontal_drag == 0 && abs(delta_y) > 8) {
-            int old_scroll = shell->recents_scroll;
             int old_pressed = shell->recents_pressed;
             int starting_drag = shell->recents_dragging == 0;
             int new_scroll = msys_native_scroll_clamp(
@@ -5381,10 +5366,10 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                 }
             }
             shell->recents_scroll = new_scroll;
-            shell->recents_scroll_changed =
-                new_scroll != shell->recents_drag_start_scroll;
-            if (new_scroll != old_scroll) {
-                redraw_recents_scroll_damage(shell, &attributes, &layout);
+            if (new_scroll == shell->recents_presented_scroll) {
+                shell->recents_redraw_pending = 0;
+            } else if (present_recents_drag_frame(shell, current, 0) == 0) {
+                shell->recents_redraw_pending = 1;
             }
         }
     } else if (
@@ -5431,7 +5416,9 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             shell->recents_dragging = 0;
             shell->recents_horizontal_drag = 0;
             shell->recents_drag_offset = 0;
-            shell->recents_scroll_changed = 0;
+            shell->recents_presented_scroll = shell->recents_scroll;
+            shell->recents_redraw_pending = 0;
+            shell->recents_redraw_at_ms = 0u;
             shell->recents_pressed = -1;
             shell->recents_close_pressed = 0;
             return;
@@ -5494,10 +5481,10 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             shell->recents_pressed = -1;
             redraw_recents_card(shell, (size_t)pressed);
         } else if (shell->recents_dragging != 0) {
-            /* Motion changes only the narrow indicator strip.  Commit one
-             * atomic viewport on release, and none for clamped/no-op drags. */
-            if (shell->recents_scroll_changed != 0) {
-                (void)commit_recents_drag_viewport(shell);
+            /* Motion is rate-limited; release presents only a final position
+             * which has not already reached the visible viewport. */
+            if (shell->recents_scroll != shell->recents_presented_scroll) {
+                (void)present_recents_drag_frame(shell, current, 1);
             }
         } else if (pressed >= 0 && (size_t)pressed < shell->task_count) {
             if (shell->recents_close_pressed != 0) {
@@ -5525,7 +5512,9 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         shell->recents_dragging = 0;
         shell->recents_horizontal_drag = 0;
         shell->recents_drag_offset = 0;
-        shell->recents_scroll_changed = 0;
+        shell->recents_presented_scroll = shell->recents_scroll;
+        shell->recents_redraw_pending = 0;
+        shell->recents_redraw_at_ms = 0u;
         shell->recents_pressed = -1;
         shell->recents_close_pressed = 0;
     } else if (event->type == ButtonRelease && event->xbutton.window == shell->toast) {
@@ -5540,7 +5529,9 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         shell->launcher_dragging = 0;
         shell->launcher_drag_start_y = event->xbutton.y;
         shell->launcher_drag_start_scroll = shell->launcher_scroll;
-        shell->launcher_scroll_changed = 0;
+        shell->launcher_presented_scroll = shell->launcher_scroll;
+        shell->launcher_redraw_pending = 0;
+        shell->launcher_redraw_at_ms = 0u;
         shell->launcher_pressed = -1;
         (void)XGrabPointer(
             shell->display,
@@ -5573,7 +5564,6 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         int delta = shell->launcher_drag_start_y - event->xmotion.y;
         if (abs(delta) > 8 && XGetWindowAttributes(shell->display, shell->launcher, &attributes)) {
             int old_pressed = shell->launcher_pressed;
-            int old_scroll = shell->launcher_scroll;
             int starting_drag = shell->launcher_dragging == 0;
             int new_scroll;
             launcher_grid(shell, attributes.width, attributes.height, &grid);
@@ -5590,10 +5580,10 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                 grid.viewport_height
             );
             shell->launcher_scroll = new_scroll;
-            shell->launcher_scroll_changed =
-                new_scroll != shell->launcher_drag_start_scroll;
-            if (new_scroll != old_scroll) {
-                redraw_launcher_scroll_damage(shell, &attributes, &grid);
+            if (new_scroll == shell->launcher_presented_scroll) {
+                shell->launcher_redraw_pending = 0;
+            } else if (present_launcher_drag_frame(shell, current, 0) == 0) {
+                shell->launcher_redraw_pending = 1;
             }
         }
     } else if (event->type == ButtonRelease && event->xbutton.window == shell->launcher) {
@@ -5607,7 +5597,9 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             shell->launcher_pressed = -1;
             shell->launcher_pointer_active = 0;
             shell->launcher_dragging = 0;
-            shell->launcher_scroll_changed = 0;
+            shell->launcher_presented_scroll = shell->launcher_scroll;
+            shell->launcher_redraw_pending = 0;
+            shell->launcher_redraw_at_ms = 0u;
             return;
         }
         launcher_grid(shell, attributes.width, attributes.height, &grid);
@@ -5623,10 +5615,10 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         shell->launcher_pointer_active = 0;
         if (shell->launcher_dragging != 0) {
             shell->launcher_dragging = 0;
-            /* Motion only updates the narrow indicator strip.  Commit one
-             * atomic final viewport, or none when clamping kept scroll at 0. */
-            if (shell->launcher_scroll_changed != 0) {
-                (void)commit_launcher_drag_viewport(shell);
+            /* Motion is rate-limited; release presents only a final position
+             * which has not already reached the visible viewport. */
+            if (shell->launcher_scroll != shell->launcher_presented_scroll) {
+                (void)present_launcher_drag_frame(shell, current, 1);
             }
         } else if (same != 0) {
             shell->launcher_pulse = pressed;
@@ -5634,7 +5626,9 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             redraw_launcher_cell(shell, (size_t)pressed);
             activate_app(shell, (size_t)pressed);
         }
-        shell->launcher_scroll_changed = 0;
+        shell->launcher_presented_scroll = shell->launcher_scroll;
+        shell->launcher_redraw_pending = 0;
+        shell->launcher_redraw_at_ms = 0u;
     } else if (
         event->type == ButtonRelease && shell->chrome_pressed_action != 0
     ) {
@@ -5734,6 +5728,20 @@ static void periodic(native_shell *shell)
             current
         );
         send_navigation(shell, action);
+    }
+    if (
+        shell->launcher_pointer_active != 0 &&
+        shell->launcher_redraw_pending != 0 &&
+        present_launcher_drag_frame(shell, current, 0) != 0
+    ) {
+        visual_change = 1;
+    }
+    if (
+        shell->recents_pointer_active != 0 &&
+        shell->recents_redraw_pending != 0 &&
+        present_recents_drag_frame(shell, current, 0) != 0
+    ) {
+        visual_change = 1;
     }
     if (
         shell->nav_interaction_until_ms != 0u &&

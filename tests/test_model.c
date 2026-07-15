@@ -81,6 +81,12 @@ static int test_adaptive_ui(void)
     CHECK(index == 0u);
     CHECK(msys_native_scroll_clamp(9999, grid.content_height, grid.viewport_height) ==
         grid.content_height - grid.viewport_height);
+    CHECK(!msys_native_drag_frame_due(0, 0, 100u, 0u, 0));
+    CHECK(!msys_native_drag_frame_due(0, 0, 100u, 0u, 1));
+    CHECK(msys_native_drag_frame_due(1, 0, 100u, 0u, 0));
+    CHECK(!msys_native_drag_frame_due(1, 0, 100u, 180u, 0));
+    CHECK(msys_native_drag_frame_due(1, 0, 180u, 180u, 0));
+    CHECK(msys_native_drag_frame_due(1, 0, 100u, 180u, 1));
     msys_native_recents_compute(
         &recents, MSYS_NATIVE_PROFILE_MOBILE, 800, 480, 42, 42, 0, 5u
     );

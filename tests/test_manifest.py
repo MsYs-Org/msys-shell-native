@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.18")
+        self.assertEqual(self.document["package"]["version"], "0.3.19")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.18"', implementation)
+        self.assertIn('#define APP_VERSION "0.3.19"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -272,21 +272,12 @@ class NativeShellManifestTests(unittest.TestCase):
             )
         ]
         self.assertIn("redraw_recents_damage", recents_motion)
-        self.assertIn("redraw_recents_scroll_damage", recents_motion)
+        self.assertIn("present_recents_drag_frame(shell, current, 0)", recents_motion)
         self.assertNotIn("redraw_recents_viewport", recents_motion)
         self.assertIn("redraw_launcher_cell", launcher_motion)
-        self.assertIn("redraw_launcher_scroll_damage", launcher_motion)
+        self.assertIn("present_launcher_drag_frame(shell, current, 0)", launcher_motion)
         self.assertNotIn("redraw_launcher_viewport", launcher_motion)
-        launcher_strip = implementation[
-            implementation.index("static void redraw_launcher_scroll_damage"):
-            implementation.index("static void redraw_recents_scroll_damage")
-        ]
-        recents_strip = implementation[
-            implementation.index("static void redraw_recents_scroll_damage"):
-            implementation.index("static void redraw_recents_exit_damage")
-        ]
-        self.assertIn("attributes->width - 12", launcher_strip)
-        self.assertIn("attributes->width - right - 12", recents_strip)
+        self.assertIn("#define DRAG_FRAME_MS 80u", implementation)
         recents_press = implementation[
             implementation.index(
                 "event->type == ButtonPress && event->xbutton.window == shell->recents"
@@ -318,8 +309,8 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("event->xbutton.y_root", recents_release)
         self.assertNotIn("event->xbutton.window != shell->recents", recents_release)
         self.assertNotIn("event->xbutton.x,\n            event->xbutton.y", recents_release)
-        self.assertIn("shell->recents_scroll_changed != 0", recents_release)
-        self.assertIn("commit_recents_drag_viewport(shell)", recents_release)
+        self.assertIn("shell->recents_scroll != shell->recents_presented_scroll", recents_release)
+        self.assertIn("present_recents_drag_frame(shell, current, 1)", recents_release)
         self.assertIn("XGrabPointer", launcher_press)
         self.assertIn("shell->launcher,\n            False", launcher_press)
         self.assertNotIn("layout.card_width + abs(offset)", implementation)
@@ -329,8 +320,19 @@ class NativeShellManifestTests(unittest.TestCase):
             ):
             implementation.index("event->type == ButtonRelease && shell->chrome_pressed_action")
         ]
-        self.assertIn("shell->launcher_scroll_changed != 0", launcher_release)
-        self.assertIn("commit_launcher_drag_viewport(shell)", launcher_release)
+        self.assertIn("shell->launcher_scroll != shell->launcher_presented_scroll", launcher_release)
+        self.assertIn("present_launcher_drag_frame(shell, current, 1)", launcher_release)
+        periodic = implementation[
+            implementation.index("static void periodic"):
+            implementation.index("static int event_loop")
+        ]
+        self.assertIn("shell->launcher_redraw_pending != 0", periodic)
+        self.assertIn("present_launcher_drag_frame(shell, current, 0)", periodic)
+        self.assertIn("shell->recents_redraw_pending != 0", periodic)
+        self.assertIn("present_recents_drag_frame(shell, current, 0)", periodic)
+        runtime_probe = (ROOT / "tests" / "runtime_probe.py").read_text(encoding="utf-8")
+        self.assertIn("capture_midpoint=True", runtime_probe)
+        self.assertIn("did not visibly follow drag before release", runtime_probe)
         self.assertIn("XGrabServer(shell->display)", implementation)
         self.assertIn("XSync(shell->display, False)", implementation)
         self.assertIn("XUngrabServer(shell->display)", implementation)
@@ -342,8 +344,6 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("begin_atomic_presentation(shell)", clock_damage)
         self.assertIn("begin_clip(shell, x, 0, width, attributes.height)", clock_damage)
         self.assertIn("end_atomic_presentation(shell)", clock_damage)
-        self.assertNotIn("DRAG_FRAME_MS", implementation)
-        self.assertNotIn("redraw_pending", implementation)
         show_transition = implementation[
             implementation.index("static void show_launch_transition"):
             implementation.index("static void present_recents")
