@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.5")
+        self.assertEqual(self.document["package"]["version"], "0.3.7")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.5"', implementation)
+        self.assertIn('#define APP_VERSION "0.3.7"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -98,6 +98,7 @@ class NativeShellManifestTests(unittest.TestCase):
         permissions = set(self.component["permissions"])
         self.assertIn("mipc.call:role:window-manager", permissions)
         self.assertIn("mipc.call:role:notification-center", permissions)
+        self.assertIn("mipc.call:role:audio-manager", permissions)
         self.assertIn("mipc.call:msys.core", permissions)
         self.assertIn(
             "mipc.event:subscribe:msys.install.package_changed",
@@ -244,6 +245,20 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertNotIn("chinese_locale", implementation)
         generated = (ROOT / "generated" / "shell_catalog.h").read_text(encoding="utf-8")
         self.assertIn("shell_catalog", generated)
+
+    def test_quick_controls_use_typed_async_audio_role(self) -> None:
+        implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
+        self.assertIn("#define CONTROL_ROW_COUNT 4", implementation)
+        self.assertIn("#define AUDIO_STATE_TIMEOUT_MS 12000u", implementation)
+        self.assertIn("#define AUDIO_WRITE_TIMEOUT_MS 10000u", implementation)
+        self.assertIn("#define AUDIO_EDGE_ZONE_DIVISOR 5", implementation)
+        self.assertIn('"role:audio-manager"', implementation)
+        self.assertIn('"get_state"', implementation)
+        self.assertIn('"set_volume"', implementation)
+        self.assertIn('"set_muted"', implementation)
+        self.assertIn("PENDING_AUDIO_STATE", implementation)
+        self.assertIn("redraw_controls_row(shell, AUDIO_CONTROL_ROW)", implementation)
+        self.assertNotIn("systemctl", implementation.lower())
 
 
 if __name__ == "__main__":

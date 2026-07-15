@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.shell.native",
     "name": "MSYS Native Shell",
-    "version": "0.3.5",
+    "version": "0.3.7",
     "kind": "system",
     "vendor": "MSYS",
     "summary": "Lean adaptive Xlib shell with app icons and task previews",
@@ -67,6 +67,7 @@
         "mipc.call:msys.core",
         "mipc.call:role:window-manager",
         "mipc.call:role:notification-center",
+        "mipc.call:role:audio-manager",
         "mipc.event:subscribe:msys.display.output_recovered",
         "mipc.event:subscribe:msys.role.notification-presenter",
         "mipc.event:subscribe:msys.role.navigation-bar",

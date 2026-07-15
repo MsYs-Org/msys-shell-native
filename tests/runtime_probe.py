@@ -11,6 +11,7 @@ import sys
 import tempfile
 import re
 import time
+import ctypes
 from pathlib import Path
 from typing import Callable
 
@@ -68,6 +69,45 @@ def debug_input(*arguments: str) -> None:
     if not binary:
         raise RuntimeError("MSYS_X11_POLICY_DEBUG is required for input smoke")
     subprocess.run([binary, *arguments], check=True, env=os.environ)
+
+
+def debug_overlay_click(title: str, x: int, y: int) -> None:
+    """Click an override-redirect shell overlay through the XTEST runtime."""
+    frame_x, frame_y, width, height = window_frame(title)
+    if not 0 <= x < width or not 0 <= y < height:
+        raise RuntimeError(f"overlay click outside {title}: {(x, y, width, height)}")
+    x11 = ctypes.CDLL("libX11.so.6")
+    xtst = ctypes.CDLL("libXtst.so.6")
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    xtst.XTestFakeMotionEvent.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+    xtst.XTestFakeButtonEvent.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+    display = x11.XOpenDisplay(os.environ["DISPLAY"].encode("ascii"))
+    if not display:
+        raise RuntimeError("cannot open X display for overlay click")
+    try:
+        if not xtst.XTestFakeMotionEvent(display, -1, frame_x + x, frame_y + y, 0):
+            raise RuntimeError("XTestFakeMotionEvent failed")
+        if not xtst.XTestFakeButtonEvent(display, 1, 1, 0):
+            raise RuntimeError("XTest button press failed")
+        if not xtst.XTestFakeButtonEvent(display, 1, 0, 0):
+            raise RuntimeError("XTest button release failed")
+        x11.XFlush(display)
+    finally:
+        x11.XCloseDisplay(display)
 
 
 def window_geometry(title: str) -> tuple[int, int]:
@@ -584,6 +624,77 @@ def main() -> int:
                 time.sleep(0.05)
             if not window_is_viewable("MSYS Quick Controls Surface"):
                 raise RuntimeError("right chrome area did not open quick controls")
+
+            audio_state = wait_for(
+                parent, outbound_call("role:audio-manager", "get_state")
+            )
+            if audio_state.get("payload") != {}:
+                raise RuntimeError(f"wrong audio state payload: {audio_state}")
+
+            def audio_payload(volume: int, muted: bool) -> dict:
+                return {
+                    "schema": "msys.audio-state.v1",
+                    "backend": "bluealsa",
+                    "available": True,
+                    "reason": None,
+                    "output_name": "Probe Headset",
+                    "volume_percent": volume,
+                    "muted": muted,
+                }
+
+            reply(parent, audio_state, audio_payload(63, False))
+            controls_width, controls_height = window_geometry(
+                "MSYS Quick Controls Surface"
+            )
+            mobile_orientation = os.environ.get("MSYS_PROBE_EXPECT_MOBILE", "")
+            controls_top = 42 if mobile_orientation else 0
+            controls_right = 42 if mobile_orientation == "landscape" else 0
+            controls_bottom = 42 if mobile_orientation == "portrait" else 0
+            rows_y = controls_top + 58
+            row_pitch = min(
+                66,
+                (controls_height - controls_bottom - 30 - rows_y) // 4,
+            )
+            row_height = row_pitch - (10 if row_pitch >= 60 else 6)
+            audio_y = rows_y + 2 * row_pitch + row_height // 2
+            audio_row_x = 14
+            audio_row_width = controls_width - controls_right - 28
+            audio_zone_x = (
+                audio_row_x + audio_row_width // 10,
+                audio_row_x + audio_row_width // 2,
+                audio_row_x + audio_row_width * 9 // 10,
+            )
+
+            debug_overlay_click(
+                "MSYS Quick Controls Surface", audio_zone_x[0], audio_y
+            )
+            volume_down = wait_for(
+                parent, outbound_call("role:audio-manager", "set_volume")
+            )
+            if volume_down.get("payload") != {"percent": 53}:
+                raise RuntimeError(f"wrong volume-down payload: {volume_down}")
+            reply(parent, volume_down, audio_payload(53, False))
+
+            debug_overlay_click(
+                "MSYS Quick Controls Surface", audio_zone_x[1], audio_y
+            )
+            mute = wait_for(
+                parent, outbound_call("role:audio-manager", "set_muted")
+            )
+            if mute.get("payload") != {"muted": True}:
+                raise RuntimeError(f"wrong audio mute payload: {mute}")
+            reply(parent, mute, audio_payload(53, True))
+
+            debug_overlay_click(
+                "MSYS Quick Controls Surface", audio_zone_x[2], audio_y
+            )
+            volume_up = wait_for(
+                parent, outbound_call("role:audio-manager", "set_volume")
+            )
+            if volume_up.get("payload") != {"percent": 63}:
+                raise RuntimeError(f"wrong volume-up payload: {volume_up}")
+            reply(parent, volume_up, audio_payload(63, True))
+
             debug_input(
                 "--debug-click-identity",
                 "org.msys.shell.native.chrome",

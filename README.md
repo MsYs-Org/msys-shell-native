@@ -1,6 +1,6 @@
 # MSYS Native Shell
 
-Current source version: `0.3.5`.
+Current source version: `0.3.7`.
 
 This is a lean adaptive X11 shell, implemented as one C process using Xlib
 and the dependency-free JSON mIPC C SDK. This repository supplies the shell
@@ -24,9 +24,13 @@ One supervised component creates several independently identified X11 windows:
 - finite, damage-clipped interaction pulses for launcher cells, Recents cards,
   and the navigation pill (there is no continuous animation timer).
 
-Quick Controls uses dependency-free Xlib line icons for Wi-Fi, Bluetooth, and
-Settings.  The 36-pixel icon tiles and the existing 56-pixel row hit targets
-remain readable and touch-friendly on a 320x480 SPI display.
+Quick Controls uses dependency-free Xlib line icons for Wi-Fi, Bluetooth,
+Bluetooth audio, and Settings. Opening the panel asynchronously reads the
+replaceable `audio-manager` role. The audio row shows the selected headset,
+live volume/mute state, or a truthful unavailable reason. Its roughly 1/5,
+3/5, and 1/5 left/centre/right zones perform -10, mute/unmute, and +10 while
+leaving enough width for a headset name or degraded reason. PCM never crosses
+mIPC.
 
 The manifest advertises only the roles actually served: `launcher`,
 `system-chrome`, `navigation-bar`, `task-switcher`, and
@@ -123,8 +127,8 @@ systemd, D-Bus, toolkit, or package manager is required.
 - Notification history remains owned by the replaceable `notification-center`
   role; the left chrome affordance calls it rather than duplicating storage.
 - Quick controls route Wi-Fi, Bluetooth, and system rows into the Settings app's
-  typed panels. Hardware policy and credentials remain in HAL/Settings, not in
-  this shell process.
+  typed panels. The audio row calls the selected `audio-manager`; hardware
+  policy and credentials remain in providers/Settings, not in this shell.
 - Window-manager screenshots are optional. Missing, stale, or invalid bounded
   P6 PPM files produce a deterministic application-glyph card instead.
 - The temporary pointer grab lasts only for an active pill gesture; there is no

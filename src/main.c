@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.5"
+#define APP_VERSION "0.3.7"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define TOAST_VISIBLE_MS 2600u
@@ -36,6 +36,11 @@
 #define IMAGE_FILE_LIMIT (4u * 1024u * 1024u)
 #define MAX_PENDING_CALLS 16u
 #define RESPONSE_CAPACITY (16u * 1024u)
+#define CONTROL_ROW_COUNT 4
+#define AUDIO_CONTROL_ROW 2
+#define AUDIO_STATE_TIMEOUT_MS 12000u
+#define AUDIO_WRITE_TIMEOUT_MS 10000u
+#define AUDIO_EDGE_ZONE_DIVISOR 5
 
 enum catalog_state {
     CATALOG_LOADING = 0,
@@ -53,7 +58,10 @@ enum pending_kind {
     PENDING_TASK_CLOSE,
     PENDING_NAVIGATION,
     PENDING_NOTIFICATION_CENTER,
-    PENDING_SETTINGS_PANEL
+    PENDING_SETTINGS_PANEL,
+    PENDING_AUDIO_STATE,
+    PENDING_AUDIO_VOLUME,
+    PENDING_AUDIO_MUTE
 };
 
 /*
@@ -163,6 +171,14 @@ typedef struct native_image_cache {
     int draw_height;
 } native_image_cache;
 
+typedef struct native_controls_layout {
+    int panel_x;
+    int panel_width;
+    int rows_y;
+    int row_pitch;
+    int row_height;
+} native_controls_layout;
+
 typedef struct native_shell {
     Display *display;
     int screen;
@@ -246,6 +262,14 @@ typedef struct native_shell {
     int recents_pulse;
     int recents_close_pressed;
     int controls_pressed;
+    int controls_pressed_zone;
+    int audio_known;
+    int audio_loading;
+    int audio_available;
+    int audio_muted;
+    int audio_volume_percent;
+    char audio_output_name[128];
+    char audio_reason[64];
     int root_width;
     int root_height;
     int launcher_width;
@@ -282,6 +306,8 @@ static void redraw_recents_viewport(
     const XWindowAttributes *attributes,
     const msys_native_recents_layout *layout
 );
+static void redraw_controls_row(native_shell *shell, int index);
+static void request_audio_state(native_shell *shell);
 static const char *tr(native_shell *shell, const char *key);
 
 static void handle_signal(int signal_number)
@@ -1092,6 +1118,31 @@ static void draw_text_centered(
     );
 }
 
+static void draw_text_centered_in_rect(
+    native_shell *shell,
+    Drawable drawable,
+    int x,
+    int y,
+    int width,
+    int height,
+    const char *text,
+    unsigned long value
+)
+{
+    int text_width = 0;
+    int glyph_y = 0;
+    int glyph_height = 1;
+    (void)text_metrics(shell, text, &text_width, &glyph_y, &glyph_height);
+    draw_text(
+        shell,
+        drawable,
+        x + (width - text_width) / 2,
+        y + msys_native_center_baseline(height, glyph_y, glyph_height),
+        text,
+        value
+    );
+}
+
 static void draw_text_ellipsized(
     native_shell *shell,
     Drawable drawable,
@@ -1893,6 +1944,66 @@ static void draw_recents(native_shell *shell)
     (void)bottom;
 }
 
+static int controls_layout_compute(
+    native_shell *shell,
+    int width,
+    int height,
+    native_controls_layout *layout
+)
+{
+    int top;
+    int right;
+    int bottom;
+    int rows_bottom;
+    int available;
+    if (layout == NULL) return 0;
+    system_insets(shell, &top, &right, &bottom);
+    layout->panel_width = shell->profile == MSYS_NATIVE_PROFILE_DESKTOP
+        ? (width - right) * 2 / 5 : width - right;
+    if (layout->panel_width < 220) layout->panel_width = width - right;
+    layout->panel_x = width - right - layout->panel_width;
+    layout->rows_y = top + 58;
+    rows_bottom = height - bottom - 30;
+    available = rows_bottom - layout->rows_y;
+    if (available < CONTROL_ROW_COUNT * 32) return 0;
+    layout->row_pitch = available / CONTROL_ROW_COUNT;
+    if (layout->row_pitch > 66) layout->row_pitch = 66;
+    layout->row_height = layout->row_pitch - (layout->row_pitch >= 60 ? 10 : 6);
+    return layout->row_height >= 26;
+}
+
+static const char *audio_reason_text(native_shell *shell)
+{
+    if (strcmp(shell->audio_reason, "controller-not-registered") == 0) {
+        return tr(shell, "controls.audio_no_controller");
+    }
+    if (strcmp(shell->audio_reason, "no-connected-a2dp-output") == 0) {
+        return tr(shell, "controls.audio_no_output");
+    }
+    if (strcmp(shell->audio_reason, "audio-stack-unavailable") == 0) {
+        return tr(shell, "controls.audio_stack_unavailable");
+    }
+    return tr(shell, "controls.audio_unavailable");
+}
+
+static void audio_status_text(native_shell *shell, char *output, size_t capacity)
+{
+    if (output == NULL || capacity == 0u) return;
+    if (shell->audio_loading != 0 && shell->audio_known == 0) {
+        (void)snprintf(output, capacity, "%s", tr(shell, "controls.audio_loading"));
+    } else if (shell->audio_available == 0) {
+        (void)snprintf(output, capacity, "%s", audio_reason_text(shell));
+    } else {
+        (void)snprintf(
+            output,
+            capacity,
+            "%d%% %s",
+            shell->audio_volume_percent,
+            tr(shell, shell->audio_muted != 0 ? "controls.audio_muted" : "controls.audio_on")
+        );
+    }
+}
+
 static void draw_control_icon(
     native_shell *shell,
     Drawable drawable,
@@ -1915,6 +2026,15 @@ static void draw_control_icon(
         XDrawLine(shell->display, drawable, shell->gc, x + 25, y + 13, x + 12, y + 24);
         XDrawLine(shell->display, drawable, shell->gc, x + 12, y + 12, x + 25, y + 24);
         XDrawLine(shell->display, drawable, shell->gc, x + 25, y + 24, x + 18, y + 30);
+    } else if (index == 2) {
+        /* Audio: a compact speaker and two open sound waves. */
+        XDrawLine(shell->display, drawable, shell->gc, x + 8, y + 15, x + 14, y + 15);
+        XDrawLine(shell->display, drawable, shell->gc, x + 14, y + 15, x + 20, y + 9);
+        XDrawLine(shell->display, drawable, shell->gc, x + 20, y + 9, x + 20, y + 27);
+        XDrawLine(shell->display, drawable, shell->gc, x + 20, y + 27, x + 14, y + 21);
+        XDrawLine(shell->display, drawable, shell->gc, x + 14, y + 21, x + 8, y + 21);
+        XDrawArc(shell->display, drawable, shell->gc, x + 19, y + 12, 9u, 12u, -90 * 64, 180 * 64);
+        XDrawArc(shell->display, drawable, shell->gc, x + 18, y + 8, 16u, 20u, -90 * 64, 180 * 64);
     } else {
         /* Settings: three bounded sliders rather than a dense small gear. */
         XDrawLine(shell->display, drawable, shell->gc, x + 8, y + 10, x + 28, y + 10);
@@ -1930,56 +2050,112 @@ static void draw_control_icon(
 static void draw_controls(native_shell *shell)
 {
     XWindowAttributes attributes;
+    native_controls_layout layout;
     int top;
     int right;
     int bottom;
-    int panel_width;
-    int panel_x;
-    int y;
-    const char *keys[] = {"controls.wifi", "controls.bluetooth", "controls.settings"};
+    const char *keys[] = {
+        "controls.wifi",
+        "controls.bluetooth",
+        "controls.audio",
+        "controls.settings"
+    };
     int index;
     if (!XGetWindowAttributes(shell->display, shell->controls, &attributes)) return;
     current_profile(shell, attributes.width, attributes.height);
     system_insets(shell, &top, &right, &bottom);
+    if (!controls_layout_compute(
+        shell, attributes.width, attributes.height, &layout
+    )) return;
     set_foreground(shell, shell->surface_variant);
     XFillRectangle(
         shell->display, shell->controls, shell->gc, 0, 0,
         (unsigned int)attributes.width, (unsigned int)attributes.height
     );
-    panel_width = shell->profile == MSYS_NATIVE_PROFILE_DESKTOP
-        ? (attributes.width - right) * 2 / 5 : attributes.width - right;
-    if (panel_width < 220) panel_width = attributes.width - right;
-    panel_x = attributes.width - right - panel_width;
     set_foreground(shell, shell->surface);
     XFillRectangle(
-        shell->display, shell->controls, shell->gc, panel_x, top,
-        (unsigned int)panel_width,
+        shell->display, shell->controls, shell->gc, layout.panel_x, top,
+        (unsigned int)layout.panel_width,
         (unsigned int)(attributes.height - top - bottom)
     );
-    draw_text(shell, shell->controls, panel_x + 18, top + 38, tr(shell, "controls.title"), shell->foreground);
-    y = top + 58;
-    for (index = 0; index < 3; index++) {
-        unsigned long value = shell->controls_pressed == index ? shell->surface_variant : shell->background;
+    draw_text(shell, shell->controls, layout.panel_x + 18, top + 38, tr(shell, "controls.title"), shell->foreground);
+    for (index = 0; index < CONTROL_ROW_COUNT; index++) {
+        int row_x = layout.panel_x + 14;
+        int row_y = layout.rows_y + index * layout.row_pitch;
+        int row_width = layout.panel_width - 28;
+        int icon_y = row_y + (layout.row_height - 36) / 2;
+        unsigned long value = shell->controls_pressed == index && index != AUDIO_CONTROL_ROW
+            ? shell->surface_variant : shell->background;
         fill_rounded(
-            shell, shell->controls, panel_x + 14, y + index * 66,
-            (unsigned int)(panel_width - 28), 56u, 16u, value
+            shell, shell->controls, row_x, row_y,
+            (unsigned int)row_width, (unsigned int)layout.row_height, 16u, value
         );
+        if (index == AUDIO_CONTROL_ROW) {
+            char status[96];
+            int edge_width = row_width / AUDIO_EDGE_ZONE_DIVISOR;
+            int middle_x = row_x + edge_width;
+            int middle_width = row_width - edge_width * 2;
+            int name_baseline = row_y + (layout.row_height >= 50 ? 20 : 16);
+            int status_baseline = row_y + layout.row_height - 8;
+            if (shell->controls_pressed == index && shell->controls_pressed_zone >= 0) {
+                int pressed_x = shell->controls_pressed_zone == 0
+                    ? row_x : (shell->controls_pressed_zone == 1
+                        ? middle_x : middle_x + middle_width);
+                int pressed_width = shell->controls_pressed_zone == 1
+                    ? middle_width : (shell->controls_pressed_zone == 0
+                        ? edge_width : row_width - edge_width - middle_width);
+                fill_rounded(
+                    shell, shell->controls,
+                    pressed_x + 3, row_y + 3,
+                    (unsigned int)(pressed_width - 6),
+                    (unsigned int)(layout.row_height - 6),
+                    12u,
+                    shell->surface_variant
+                );
+            }
+            audio_status_text(shell, status, sizeof(status));
+            draw_text_centered_in_rect(
+                shell, shell->controls, row_x, row_y, edge_width,
+                layout.row_height, "-10", shell->foreground
+            );
+            draw_text_ellipsized(
+                shell, shell->controls, middle_x + 5, name_baseline,
+                middle_width - 10,
+                shell->audio_available != 0 && shell->audio_output_name[0] != '\0'
+                    ? shell->audio_output_name : tr(shell, keys[index]),
+                shell->foreground
+            );
+            draw_text_ellipsized(
+                shell, shell->controls, middle_x + 5, status_baseline,
+                middle_width - 10, status,
+                shell->audio_available != 0 ? shell->accent : shell->muted
+            );
+            draw_text_centered_in_rect(
+                shell, shell->controls,
+                middle_x + middle_width, row_y,
+                row_width - edge_width - middle_width, layout.row_height,
+                "+10", shell->foreground
+            );
+            continue;
+        }
         fill_rounded(
-            shell, shell->controls, panel_x + 24, y + 10 + index * 66,
+            shell, shell->controls, layout.panel_x + 24, icon_y,
             36u, 36u, 12u, shell->accent
         );
         draw_control_icon(
-            shell, shell->controls, panel_x + 24, y + 10 + index * 66, index
+            shell, shell->controls, layout.panel_x + 24, icon_y, index
         );
         draw_text(
-            shell, shell->controls, panel_x + 72, y + 35 + index * 66,
+            shell, shell->controls, layout.panel_x + 72,
+            row_y + layout.row_height / 2 + 6,
             tr(shell, keys[index]), shell->foreground
         );
     }
     draw_text(
-        shell, shell->controls, panel_x + 18, attributes.height - bottom - 18,
+        shell, shell->controls, layout.panel_x + 18, attributes.height - bottom - 12,
         tr(shell, "controls.open_settings"), shell->muted
     );
+    (void)right;
 }
 
 static void draw_toast(native_shell *shell)
@@ -2308,6 +2484,7 @@ static void hide_controls(native_shell *shell)
     if (shell->controls_visible == 0) return;
     shell->controls_visible = 0;
     shell->controls_pressed = -1;
+    shell->controls_pressed_zone = -1;
     XUnmapWindow(shell->display, shell->controls);
 }
 
@@ -2367,8 +2544,10 @@ static void show_controls(native_shell *shell)
     }
     shell->controls_visible = 1;
     shell->controls_pressed = -1;
+    shell->controls_pressed_zone = -1;
     XMapRaised(shell->display, shell->controls);
     raise_system_bars(shell);
+    request_audio_state(shell);
     draw_controls(shell);
     XFlush(shell->display);
 }
@@ -2444,6 +2623,186 @@ static void start_settings_panel(native_shell *shell, const char *panel, size_t 
     }
     hide_controls(shell);
     XFlush(shell->display);
+}
+
+static int payload_bool_value(const char *payload, const char *field, int *value)
+{
+    const char *raw = NULL;
+    size_t length = 0u;
+    if (
+        value == NULL ||
+        msys_mipc_json_get_raw(payload, field, &raw, &length) != MSYS_MIPC_OK
+    ) return 0;
+    if (length == 4u && memcmp(raw, "true", 4u) == 0) {
+        *value = 1;
+        return 1;
+    }
+    if (length == 5u && memcmp(raw, "false", 5u) == 0) {
+        *value = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static int payload_percent_value(const char *payload, const char *field, int *value)
+{
+    const char *raw = NULL;
+    size_t length = 0u;
+    size_t index;
+    int result = 0;
+    if (
+        value == NULL ||
+        msys_mipc_json_get_raw(payload, field, &raw, &length) != MSYS_MIPC_OK ||
+        length == 0u || length > 3u
+    ) return 0;
+    for (index = 0u; index < length; index++) {
+        if (raw[index] < '0' || raw[index] > '9') return 0;
+        result = result * 10 + (raw[index] - '0');
+    }
+    if (result > 100) return 0;
+    *value = result;
+    return 1;
+}
+
+static void audio_mark_unavailable(native_shell *shell, const char *reason)
+{
+    shell->audio_known = 1;
+    shell->audio_loading = 0;
+    shell->audio_available = 0;
+    shell->audio_muted = 0;
+    shell->audio_volume_percent = -1;
+    shell->audio_output_name[0] = '\0';
+    (void)snprintf(
+        shell->audio_reason,
+        sizeof(shell->audio_reason),
+        "%s",
+        reason != NULL && reason[0] != '\0' ? reason : "provider-unavailable"
+    );
+}
+
+static int apply_audio_state(native_shell *shell, const char *payload)
+{
+    char schema[64];
+    char name[sizeof(shell->audio_output_name)];
+    char reason[sizeof(shell->audio_reason)];
+    int available;
+    int muted;
+    int volume;
+    if (
+        msys_mipc_json_get_string(
+            payload, "schema", schema, sizeof(schema), NULL
+        ) != MSYS_MIPC_OK ||
+        strcmp(schema, "msys.audio-state.v1") != 0 ||
+        payload_bool_value(payload, "available", &available) == 0
+    ) return 0;
+    shell->audio_known = 1;
+    shell->audio_loading = 0;
+    shell->audio_available = available;
+    if (available == 0) {
+        if (
+            msys_mipc_json_get_string(
+                payload, "reason", reason, sizeof(reason), NULL
+            ) != MSYS_MIPC_OK
+        ) (void)snprintf(reason, sizeof(reason), "%s", "provider-unavailable");
+        audio_mark_unavailable(shell, reason);
+        return 1;
+    }
+    if (
+        msys_mipc_json_get_string(
+            payload, "output_name", name, sizeof(name), NULL
+        ) != MSYS_MIPC_OK ||
+        payload_percent_value(payload, "volume_percent", &volume) == 0 ||
+        payload_bool_value(payload, "muted", &muted) == 0
+    ) return 0;
+    shell->audio_muted = muted;
+    shell->audio_volume_percent = volume;
+    (void)snprintf(
+        shell->audio_output_name,
+        sizeof(shell->audio_output_name),
+        "%s",
+        name
+    );
+    shell->audio_reason[0] = '\0';
+    return 1;
+}
+
+static int audio_call_pending(const native_shell *shell)
+{
+    return (
+        pending_has_kind(shell, PENDING_AUDIO_STATE) != 0 ||
+        pending_has_kind(shell, PENDING_AUDIO_VOLUME) != 0 ||
+        pending_has_kind(shell, PENDING_AUDIO_MUTE) != 0
+    );
+}
+
+static void request_audio_state(native_shell *shell)
+{
+    if (audio_call_pending(shell) != 0) return;
+    shell->audio_loading = 1;
+    if (
+        send_async(
+            shell,
+            PENDING_AUDIO_STATE,
+            0u,
+            "role:audio-manager",
+            "get_state",
+            "{}",
+            AUDIO_STATE_TIMEOUT_MS,
+            1
+        ) == 0u
+    ) {
+        audio_mark_unavailable(shell, "provider-unavailable");
+    }
+    if (shell->controls_visible != 0) redraw_controls_row(shell, AUDIO_CONTROL_ROW);
+}
+
+static void activate_audio_control(native_shell *shell, int zone)
+{
+    char payload[64];
+    enum pending_kind kind;
+    const char *method;
+    int percent;
+    if (zone < 0 || zone > 2) return;
+    if (shell->audio_available == 0) {
+        request_audio_state(shell);
+        show_toast(shell, tr(shell, "error.audio_unavailable"));
+        return;
+    }
+    if (audio_call_pending(shell) != 0) {
+        show_toast(shell, tr(shell, "error.busy"));
+        return;
+    }
+    if (zone == 1) {
+        kind = PENDING_AUDIO_MUTE;
+        method = "set_muted";
+        (void)snprintf(
+            payload,
+            sizeof(payload),
+            "{\"muted\":%s}",
+            shell->audio_muted != 0 ? "false" : "true"
+        );
+    } else {
+        percent = shell->audio_volume_percent + (zone == 0 ? -10 : 10);
+        if (percent < 0) percent = 0;
+        if (percent > 100) percent = 100;
+        kind = PENDING_AUDIO_VOLUME;
+        method = "set_volume";
+        (void)snprintf(payload, sizeof(payload), "{\"percent\":%d}", percent);
+    }
+    if (
+        send_async(
+            shell,
+            kind,
+            0u,
+            "role:audio-manager",
+            method,
+            payload,
+            AUDIO_WRITE_TIMEOUT_MS,
+            1
+        ) == 0u
+    ) {
+        show_toast(shell, tr(shell, "error.audio_update_failed"));
+    }
 }
 
 static void request_apps(native_shell *shell)
@@ -3308,6 +3667,17 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
             show_toast(shell, tr(shell, "error.notification_center_unavailable"));
         } else if (pending.kind == PENDING_SETTINGS_PANEL) {
             show_toast(shell, tr(shell, "error.settings_unavailable"));
+        } else if (pending.kind == PENDING_AUDIO_STATE) {
+            audio_mark_unavailable(shell, "provider-unavailable");
+            if (shell->controls_visible != 0) {
+                redraw_controls_row(shell, AUDIO_CONTROL_ROW);
+            }
+        } else if (
+            pending.kind == PENDING_AUDIO_VOLUME ||
+            pending.kind == PENDING_AUDIO_MUTE
+        ) {
+            show_toast(shell, tr(shell, "error.audio_update_failed"));
+            request_audio_state(shell);
         }
         return;
     }
@@ -3406,6 +3776,19 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
     case PENDING_NOTIFICATION_CENTER:
         break;
     case PENDING_SETTINGS_PANEL:
+        break;
+    case PENDING_AUDIO_STATE:
+    case PENDING_AUDIO_VOLUME:
+    case PENDING_AUDIO_MUTE:
+        if (apply_audio_state(shell, payload) == 0) {
+            audio_mark_unavailable(shell, "invalid-state");
+            if (pending.kind != PENDING_AUDIO_STATE) {
+                show_toast(shell, tr(shell, "error.audio_update_failed"));
+            }
+        }
+        if (shell->controls_visible != 0) {
+            redraw_controls_row(shell, AUDIO_CONTROL_ROW);
+        }
         break;
     case PENDING_NONE:
     default:
@@ -3641,46 +4024,69 @@ static void pulse_recents_card(native_shell *shell, size_t index, uint64_t curre
 static int controls_hit(native_shell *shell, int x, int y)
 {
     XWindowAttributes attributes;
+    native_controls_layout layout;
     int top;
     int right;
     int bottom;
-    int panel_width;
-    int panel_x;
     int relative;
     if (!XGetWindowAttributes(shell->display, shell->controls, &attributes)) return -2;
     system_insets(shell, &top, &right, &bottom);
-    panel_width = shell->profile == MSYS_NATIVE_PROFILE_DESKTOP
-        ? (attributes.width - right) * 2 / 5 : attributes.width - right;
-    if (panel_width < 220) panel_width = attributes.width - right;
-    panel_x = attributes.width - right - panel_width;
-    if (x < panel_x || y < top || y >= attributes.height - bottom) return -2;
-    relative = y - (top + 58);
+    if (!controls_layout_compute(
+        shell, attributes.width, attributes.height, &layout
+    )) return -2;
     if (
-        relative >= 0 && relative / 66 < 3 && relative % 66 < 56 &&
-        x >= panel_x + 14 && x < panel_x + panel_width - 14
-    ) return relative / 66;
+        x < layout.panel_x || y < top || y >= attributes.height - bottom
+    ) return -2;
+    relative = y - layout.rows_y;
+    if (
+        relative >= 0 && relative / layout.row_pitch < CONTROL_ROW_COUNT &&
+        relative % layout.row_pitch < layout.row_height &&
+        x >= layout.panel_x + 14 &&
+        x < layout.panel_x + layout.panel_width - 14
+    ) return relative / layout.row_pitch;
     return -1;
+}
+
+static int controls_audio_zone(native_shell *shell, int x)
+{
+    XWindowAttributes attributes;
+    native_controls_layout layout;
+    int row_x;
+    int row_width;
+    int zone;
+    if (
+        !XGetWindowAttributes(shell->display, shell->controls, &attributes) ||
+        !controls_layout_compute(
+            shell, attributes.width, attributes.height, &layout
+        )
+    ) return -1;
+    row_x = layout.panel_x + 14;
+    row_width = layout.panel_width - 28;
+    if (x < row_x || x >= row_x + row_width) return -1;
+    zone = x - row_x;
+    if (zone < row_width / AUDIO_EDGE_ZONE_DIVISOR) return 0;
+    if (zone >= row_width - row_width / AUDIO_EDGE_ZONE_DIVISOR) return 2;
+    return 1;
 }
 
 static void redraw_controls_row(native_shell *shell, int index)
 {
     XWindowAttributes attributes;
-    int top;
-    int right;
-    int bottom;
-    int panel_width;
-    int panel_x;
-    if (index < 0 || index >= 3 ||
+    native_controls_layout layout;
+    if (index < 0 || index >= CONTROL_ROW_COUNT ||
         !XGetWindowAttributes(shell->display, shell->controls, &attributes)) return;
-    system_insets(shell, &top, &right, &bottom);
-    panel_width = shell->profile == MSYS_NATIVE_PROFILE_DESKTOP
-        ? (attributes.width - right) * 2 / 5 : attributes.width - right;
-    if (panel_width < 220) panel_width = attributes.width - right;
-    panel_x = attributes.width - right - panel_width;
-    begin_clip(shell, panel_x + 10, top + 54 + index * 66, panel_width - 20, 64);
+    if (!controls_layout_compute(
+        shell, attributes.width, attributes.height, &layout
+    )) return;
+    begin_clip(
+        shell,
+        layout.panel_x + 10,
+        layout.rows_y - 4 + index * layout.row_pitch,
+        layout.panel_width - 20,
+        layout.row_pitch
+    );
     draw_controls(shell);
     end_clip(shell);
-    (void)bottom;
 }
 
 static void handle_x_event(native_shell *shell, XEvent *event)
@@ -4181,14 +4587,28 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         else if (event->xbutton.x >= attributes.width * 2 / 3) show_controls(shell);
     } else if (event->type == ButtonPress && event->xbutton.window == shell->controls) {
         shell->controls_pressed = controls_hit(shell, event->xbutton.x, event->xbutton.y);
+        shell->controls_pressed_zone = shell->controls_pressed == AUDIO_CONTROL_ROW
+            ? controls_audio_zone(shell, event->xbutton.x) : -1;
         redraw_controls_row(shell, shell->controls_pressed);
     } else if (event->type == ButtonRelease && event->xbutton.window == shell->controls) {
-        static const char *panels[] = {"wifi", "bluetooth", "system"};
+        static const char *panels[] = {"wifi", "bluetooth", NULL, "system"};
         int released = controls_hit(shell, event->xbutton.x, event->xbutton.y);
+        int released_zone = released == AUDIO_CONTROL_ROW
+            ? controls_audio_zone(shell, event->xbutton.x) : -1;
         int pressed = shell->controls_pressed;
+        int pressed_zone = shell->controls_pressed_zone;
         shell->controls_pressed = -1;
+        shell->controls_pressed_zone = -1;
         if (released == -2) hide_controls(shell);
-        else if (released >= 0 && released == pressed) {
+        else if (
+            released >= 0 && released == pressed &&
+            (released != AUDIO_CONTROL_ROW || released_zone == pressed_zone)
+        ) {
+            redraw_controls_row(shell, pressed);
+            if (released == AUDIO_CONTROL_ROW) {
+                activate_audio_control(shell, released_zone);
+                return;
+            }
             start_settings_panel(shell, panels[released], (size_t)released);
         } else redraw_controls_row(shell, pressed);
     }
@@ -4364,6 +4784,19 @@ static void periodic(native_shell *shell)
         } else if (expired.kind == PENDING_SETTINGS_PANEL) {
             show_toast(shell, tr(shell, "error.settings_unavailable"));
             visual_change = 1;
+        } else if (expired.kind == PENDING_AUDIO_STATE) {
+            audio_mark_unavailable(shell, "provider-unavailable");
+            if (shell->controls_visible != 0) {
+                redraw_controls_row(shell, AUDIO_CONTROL_ROW);
+                visual_change = 1;
+            }
+        } else if (
+            expired.kind == PENDING_AUDIO_VOLUME ||
+            expired.kind == PENDING_AUDIO_MUTE
+        ) {
+            show_toast(shell, tr(shell, "error.audio_update_failed"));
+            request_audio_state(shell);
+            visual_change = 1;
         }
     }
     if (refresh_chrome_clock(shell) != 0) {
@@ -4457,6 +4890,8 @@ int main(int argc, char **argv)
     shell.recents_pressed = -1;
     shell.recents_pulse = -1;
     shell.controls_pressed = -1;
+    shell.controls_pressed_zone = -1;
+    shell.audio_volume_percent = -1;
     if (msys_i18n_locale_from_environment(shell.locale, sizeof(shell.locale)) != MSYS_I18N_OK) {
         shell.locale[0] = '\0';
     }

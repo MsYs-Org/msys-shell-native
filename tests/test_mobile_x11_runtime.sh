@@ -47,9 +47,18 @@ run_case()
     orientation=$3
     expected_name=$4
     expected_layout=$5
-    export DISPLAY=:$display_number
+    xvfb_display=:$display_number
+    if test "${MSYS_TEST_XVFB_TCP:-0}" = 1; then
+        export DISPLAY=127.0.0.1:$display_number
+        xvfb_transport='-listen tcp -nolisten unix'
+    else
+        export DISPLAY=$xvfb_display
+        xvfb_transport='-nolisten tcp'
+    fi
 
-    Xvfb "$DISPLAY" -screen 0 "${geometry}x24" -ac -nolisten tcp \
+    # TCP mode is useful on WSLg where /tmp/.X11-unix is a read-only mount
+    # without the sticky bit. The default remains a local Unix socket.
+    Xvfb "$xvfb_display" -screen 0 "${geometry}x24" -ac $xvfb_transport \
         >"$TMP/xvfb-$expected_name.log" 2>&1 &
     xvfb_pid=$!
     ready=0
