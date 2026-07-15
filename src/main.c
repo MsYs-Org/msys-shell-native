@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.10"
+#define APP_VERSION "0.3.11"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define TOAST_VISIBLE_MS 2600u
@@ -4861,12 +4861,28 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             shell->recents_pressed >= 0 && abs(delta_x) > abs(delta_y) + 6 &&
             abs(delta_x) > 8
         ) {
+            int card_x;
+            int card_y;
+            int old_offset = shell->recents_drag_offset;
+            int left;
+            int width;
             shell->recents_horizontal_drag = 1;
             shell->recents_dragging = 1;
             if (delta_x > layout.card_width) delta_x = layout.card_width;
             if (delta_x < -layout.card_width) delta_x = -layout.card_width;
             shell->recents_drag_offset = delta_x;
+            recents_card_rect(
+                &layout, shell->recents_scroll, (size_t)shell->recents_pressed,
+                &card_x, &card_y
+            );
+            left = card_x + (old_offset < delta_x ? old_offset : delta_x) - 3;
+            width = layout.card_width + abs(delta_x - old_offset) + 6;
+            redraw_recents_damage(
+                shell, &attributes, &layout,
+                left, card_y - 3, width, layout.card_height + 6
+            );
         } else if (shell->recents_horizontal_drag == 0 && abs(delta_y) > 8) {
+            int old_scroll = shell->recents_scroll;
             shell->recents_dragging = 1;
             shell->recents_pressed = -1;
             shell->recents_scroll = msys_native_scroll_clamp(
@@ -4874,6 +4890,9 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                 layout.content_height,
                 layout.viewport_height
             );
+            if (shell->recents_scroll != old_scroll) {
+                redraw_recents_viewport(shell, &attributes, &layout);
+            }
         }
     } else if (event->type == ButtonRelease && event->xbutton.window == shell->recents) {
         XWindowAttributes attributes;
@@ -5027,15 +5046,23 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         int delta = shell->launcher_drag_start_y - event->xmotion.y;
         if (abs(delta) > 8 && XGetWindowAttributes(shell->display, shell->launcher, &attributes)) {
             if (shell->launcher_dragging == 0 && shell->launcher_pressed >= 0) {
+                size_t old_pressed = (size_t)shell->launcher_pressed;
                 shell->launcher_pressed = -1;
+                redraw_launcher_cell(shell, old_pressed);
             }
             launcher_grid(shell, attributes.width, attributes.height, &grid);
             shell->launcher_dragging = 1;
-            shell->launcher_scroll = msys_native_scroll_clamp(
+            {
+                int old_scroll = shell->launcher_scroll;
+                shell->launcher_scroll = msys_native_scroll_clamp(
                 shell->launcher_drag_start_scroll + delta,
                 grid.content_height,
                 grid.viewport_height
-            );
+                );
+                if (shell->launcher_scroll != old_scroll) {
+                    redraw_launcher_viewport(shell, &attributes, &grid);
+                }
+            }
         }
     } else if (event->type == ButtonRelease && event->xbutton.window == shell->launcher) {
         XWindowAttributes attributes;

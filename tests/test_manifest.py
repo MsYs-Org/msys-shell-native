@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.10")
+        self.assertEqual(self.document["package"]["version"], "0.3.11")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.10"', implementation)
+        self.assertIn('#define APP_VERSION "0.3.11"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -233,7 +233,7 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertNotIn("XMapRaised", show_recents)
         self.assertIn("recents_mapped", implementation)
 
-    def test_finite_transition_and_release_only_drag_contract(self) -> None:
+    def test_finite_transition_and_bus_paced_drag_contract(self) -> None:
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
         self.assertIn('#define LAUNCH_TRANSITION_FRAMES 4', implementation)
         self.assertIn('#define LAUNCH_TRANSITION_FRAME_MS 90u', implementation)
@@ -263,8 +263,10 @@ class NativeShellManifestTests(unittest.TestCase):
                 "event->type == ButtonRelease && event->xbutton.window == shell->launcher"
             )
         ]
-        self.assertNotIn("redraw_recents", recents_motion)
-        self.assertNotIn("redraw_launcher", launcher_motion)
+        self.assertIn("redraw_recents_damage", recents_motion)
+        self.assertIn("redraw_recents_viewport", recents_motion)
+        self.assertIn("redraw_launcher_cell", launcher_motion)
+        self.assertIn("redraw_launcher_viewport", launcher_motion)
         recents_press = implementation[
             implementation.index(
                 "event->type == ButtonPress && event->xbutton.window == shell->recents"
