@@ -176,7 +176,7 @@ int msys_native_system_metrics_format(
     written = snprintf(
         output,
         capacity,
-        "%s %s  %s %s",
+        "%s%s %s%s",
         cpu_label,
         cpu,
         memory_label,

@@ -35,9 +35,7 @@ int main(void)
     message = msys_i18n_lookup(
         &shell_catalog, "zh-Hans-CN", "metrics.memory_short"
     );
-    CHECK(message != NULL && strcmp(
-        message, "\xe5\x86\x85\xe5\xad\x98"
-    ) == 0);
+    CHECK(message != NULL && strcmp(message, "MEM") == 0);
     message = msys_i18n_lookup(
         &shell_catalog, "zh-Hans-CN", "process.lifecycle_on_demand"
     );

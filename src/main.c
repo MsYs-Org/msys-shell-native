@@ -29,7 +29,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.24"
+#define APP_VERSION "0.3.25"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8

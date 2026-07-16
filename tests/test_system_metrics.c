@@ -40,13 +40,13 @@ int main(void)
     CHECK(msys_native_system_metrics_format(
         &metrics, "CPU", "MEM", text, sizeof(text)
     ));
-    CHECK(strcmp(text, "CPU 44%  MEM 63%") == 0);
+    CHECK(strcmp(text, "CPU44% MEM63%") == 0);
     metrics.cpu_available = 0;
     metrics.memory_available = 0;
     CHECK(msys_native_system_metrics_format(
         &metrics, "CPU", "MEM", text, sizeof(text)
     ));
-    CHECK(strcmp(text, "CPU --  MEM --") == 0);
+    CHECK(strcmp(text, "CPU-- MEM--") == 0);
     CHECK(msys_native_system_metrics_sample(&metrics));
     puts("native shell system metrics tests passed");
     return 0;

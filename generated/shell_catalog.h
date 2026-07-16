@@ -126,7 +126,7 @@ static const msys_i18n_entry shell_catalog_entries[] = {
     {"zh", "process.lifecycle_session", "\xe4" "\xbc" "\x9a" "\xe8" "\xaf" "\x9d"},
     {"zh", "process.lifecycle_supervisor", "\xe7" "\x9b" "\x91" "\xe7" "\xae" "\xa1" "\xe5" "\x99" "\xa8"},
     {"zh", "metrics.cpu_short", "CPU"},
-    {"zh", "metrics.memory_short", "\xe5" "\x86" "\x85" "\xe5" "\xad" "\x98"},
+    {"zh", "metrics.memory_short", "MEM"},
     {"zh", "chrome.notifications", "\xe9" "\x80" "\x9a" "\xe7" "\x9f" "\xa5"},
     {"zh", "chrome.controls", "\xe5" "\xbf" "\xab" "\xe6" "\x8d" "\xb7" "\xe6" "\x8e" "\xa7" "\xe5" "\x88" "\xb6"},
     {"zh", "notification.title", "\xe9" "\x80" "\x9a" "\xe7" "\x9f" "\xa5"},

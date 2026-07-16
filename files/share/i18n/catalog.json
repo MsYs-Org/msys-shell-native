@@ -129,7 +129,7 @@
       "process.lifecycle_session": "会话",
       "process.lifecycle_supervisor": "监管器",
       "metrics.cpu_short": "CPU",
-      "metrics.memory_short": "内存",
+      "metrics.memory_short": "MEM",
       "chrome.notifications": "通知",
       "chrome.controls": "快捷控制",
       "notification.title": "通知",
