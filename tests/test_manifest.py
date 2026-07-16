@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.22")
+        self.assertEqual(self.document["package"]["version"], "0.3.23")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.22"', implementation)
+        self.assertIn('#define APP_VERSION "0.3.23"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -260,6 +260,25 @@ class NativeShellManifestTests(unittest.TestCase):
         )
         self.assertNotIn("XMapRaised", show_recents)
         self.assertIn("recents_mapped", implementation)
+
+    def test_notification_center_is_a_managed_explicit_role_overlay(self) -> None:
+        implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
+        notification_window = implementation[
+            implementation.index("shell->notification_center = create_window("):
+            implementation.index("shell->controls = create_window(")
+        ]
+        self.assertIn('"notification-center"', notification_window)
+        self.assertIn(
+            '"org.msys.shell.native.notification-center"', notification_window
+        )
+
+        override_block = implementation[
+            implementation.index("XSetWindowAttributes overlay_attributes;"):
+            implementation.index("int toast_width =")
+        ]
+        self.assertNotIn("shell->notification_center", override_block)
+        self.assertIn("shell->controls", override_block)
+        self.assertIn("shell->launch_transition", override_block)
 
     def test_finite_transition_and_bus_paced_drag_contract(self) -> None:
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")

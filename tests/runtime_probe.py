@@ -766,6 +766,23 @@ def window_is_viewable(title: str) -> bool:
     return result.returncode == 0 and "Map State: IsViewable" in result.stdout
 
 
+def window_is_override_redirect(title: str) -> bool:
+    result = subprocess.run(
+        ["xwininfo", "-display", os.environ["DISPLAY"], "-name", title, "-stats"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    state = re.search(
+        r"^\s*Override Redirect State:\s+(yes|no)\s*$",
+        result.stdout,
+        re.MULTILINE | re.IGNORECASE,
+    )
+    if state is None:
+        raise RuntimeError(f"cannot read override state for {title}: {result.stdout}")
+    return state.group(1).casefold() == "yes"
+
+
 def wait_window_viewable(title: str, timeout: float = 2) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -1604,6 +1621,10 @@ def main() -> int:
             )
             if not wait_window_viewable("MSYS Notification Center"):
                 raise RuntimeError("left chrome area did not open native notification center")
+            if window_is_override_redirect("MSYS Notification Center"):
+                raise RuntimeError(
+                    "native notification center bypassed the X11 window policy"
+                )
             assert_window_role(
                 "MSYS Notification Center",
                 "notification-center",

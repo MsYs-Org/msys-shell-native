@@ -1,6 +1,12 @@
 # MSYS Native Shell
 
-Current source version: `0.3.22`.
+Current source version: `0.3.23`.
+
+Version 0.3.23 keeps the explicit `notification-center` role as a normal
+managed X11 overlay. It no longer marks that surface override-redirect, so the
+native window policy can inventory, layer, dismiss, and apply workarea geometry
+to it without trusting arbitrary override-redirect windows. Quick Controls and
+the compact launch mask retain their existing private overlay behavior.
 
 Version 0.3.22 gives `HH:MM:SS` eight fixed character slots and updates only
 numeric slots whose glyph changed. A small reusable Pixmap is completed before

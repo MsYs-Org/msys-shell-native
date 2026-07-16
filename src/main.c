@@ -28,7 +28,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.22"
+#define APP_VERSION "0.3.23"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8
@@ -3506,12 +3506,6 @@ static int initialize_x11(native_shell *shell)
     {
         XSetWindowAttributes overlay_attributes;
         overlay_attributes.override_redirect = True;
-        XChangeWindowAttributes(
-            shell->display,
-            shell->notification_center,
-            CWOverrideRedirect,
-            &overlay_attributes
-        );
         XChangeWindowAttributes(
             shell->display, shell->controls, CWOverrideRedirect, &overlay_attributes
         );
