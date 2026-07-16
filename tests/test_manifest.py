@@ -17,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.5")
+        self.assertEqual(self.document["package"]["version"], "0.6.6")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.5"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.6"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -126,8 +126,14 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("msys_native_launcher_layout_reconcile", render)
         self.assertIn("lv_button_create(grid)", render)
         self.assertIn("launcher_resolve_grid_geometry", source)
+        self.assertIn("lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN)", source)
         self.assertIn("lv_obj_set_flex_grow(grid, 0)", source)
         self.assertIn("launcher geometry apps=%zu", source)
+        self.assertIn('"--probe-launcher"', source)
+        probe = (ROOT / "tests" / "probe_lvgl_shell.sh").read_text(encoding="utf-8")
+        self.assertIn("launcher geometry apps=", probe)
+        self.assertIn("launcher tile pixels are not visible", probe)
+        self.assertIn("xwd -silent", probe)
 
     def test_phase_two_role_boundary_does_not_claim_missing_contracts(self) -> None:
         source = (ROOT / "README.md").read_text(encoding="utf-8")

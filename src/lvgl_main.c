@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.5"
+#define APP_VERSION "0.6.6"
 #define SURFACE_COUNT 7u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -892,6 +892,11 @@ static void launcher_resolve_grid_geometry(shell_view *view, lv_obj_t *root,
     int32_t available;
     int32_t row_gap;
     if(root == NULL || grid == NULL || header == NULL || status == NULL) return;
+    /* LVGL 9.3's XML component root does not currently apply the <view>
+     * flex_flow attribute to the instantiated object. Keep the declarative
+     * value for forward compatibility, but enforce the role's required
+     * vertical structure at its ownership boundary. */
+    lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
     lv_obj_update_layout(root);
     row_gap = lv_obj_get_style_pad_row(root, LV_PART_MAIN);
     available = lv_obj_get_content_height(root) - lv_obj_get_height(header) -
@@ -2116,8 +2121,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.5\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.5\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.6\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.6\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -2283,7 +2288,8 @@ static void usage(const char *program)
 {
     fprintf(stderr,
             "usage: %s [--display :24] [--output spi|hdmi] [--ui-dir PATH] "
-            "[--watch-ui] [--reduced-motion] [--run-ms N]\n",
+            "[--watch-ui] [--reduced-motion] [--probe-launcher ICON.ppm] "
+            "[--run-ms N]\n",
             program);
 }
 
@@ -2334,7 +2340,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.5\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.6\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","
@@ -2354,6 +2360,24 @@ int main(int argc, char **argv)
             shell.watch_ui = 1;
         else if(strcmp(argv[index], "--reduced-motion") == 0)
             reduced_motion = true;
+        else if(strcmp(argv[index], "--probe-launcher") == 0 && index + 1 < argc) {
+            const char *icon = argv[++index];
+            static const char *components[] = {
+                "org.msys.probe:one", "org.msys.probe:two", "org.msys.probe:three"
+            };
+            static const char *names[] = {"探针一", "探针二", "探针三"};
+            size_t app;
+            shell.app_count = sizeof(components) / sizeof(components[0]);
+            shell.apps_loaded = 1;
+            for(app = 0u; app < shell.app_count; app++) {
+                (void)snprintf(shell.apps[app].component,
+                    sizeof(shell.apps[app].component), "%s", components[app]);
+                (void)snprintf(shell.apps[app].name,
+                    sizeof(shell.apps[app].name), "%s", names[app]);
+                (void)snprintf(shell.apps[app].icon_path,
+                    sizeof(shell.apps[app].icon_path), "%s", icon);
+            }
+        }
         else if(strcmp(argv[index], "--run-ms") == 0 && index + 1 < argc)
             shell.run_until = monotonic_ms() + strtoull(argv[++index], NULL, 10);
         else {
