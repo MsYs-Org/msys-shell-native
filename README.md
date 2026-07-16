@@ -1,6 +1,12 @@
 # MSYS Native Shell
 
-Current source version: `0.6.3`.
+Current source version: `0.6.4`.
+
+Version 0.6.4 fixes the LVGL Launcher flex geometry after asynchronous app
+discovery. The authoritative app list and persisted page layout were already
+present, but a content-sized grid had zero height before its children were
+created, so LVGL clipped every tile. The grid now has a non-zero flex basis and
+the compact page controls have a bounded row container for 320-pixel screens.
 
 Version 0.6.1 connects the LVGL preview Launcher to the same persisted
 `msys.shell-preferences.v1` and `launcher-layout.v1` contracts as the Xlib

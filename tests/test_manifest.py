@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -16,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.3")
+        self.assertEqual(self.document["package"]["version"], "0.6.4")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.3"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.4"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -84,6 +85,39 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("msys_native_notification_append", source)
         self.assertIn("msys_native_parse_wifi_state", source)
         self.assertIn("msys_native_gesture_motion", source)
+
+    def test_lvgl_launcher_async_grid_keeps_nonzero_flex_geometry(self) -> None:
+        launcher_path = ROOT / "files" / "share" / "ui" / "shell" / "launcher.xml"
+        tree = ET.parse(launcher_path)
+        named = {
+            element.attrib["name"]: element
+            for element in tree.iter()
+            if "name" in element.attrib
+        }
+        grid = named["app_grid"]
+        self.assertEqual(grid.attrib["height"], "1")
+        self.assertEqual(grid.attrib["flex_grow"], "1")
+        self.assertEqual(grid.attrib["scrollable"], "false")
+        view = tree.getroot().find("view")
+        self.assertIsNotNone(view)
+        header = list(view)[0]
+        title_column = list(header)[0]
+        self.assertEqual(title_column.attrib["width"], "1")
+        self.assertEqual(title_column.attrib["flex_grow"], "1")
+        page_navigation = named["page_navigation"]
+        self.assertEqual(page_navigation.attrib["width"], "112")
+        self.assertEqual(page_navigation.attrib["flex_flow"], "row")
+
+        source = (ROOT / "src" / "lvgl_main.c").read_text(encoding="utf-8")
+        reply_start = "if(call.kind == PENDING_APPS) {\n        if(msys_native_parse_apps"
+        reply = source[source.index(reply_start) :]
+        reply = reply[: reply.index("else if(call.kind == PENDING_TASKS)")]
+        self.assertLess(reply.index("shell->apps_loaded = 1"),
+                        reply.index("render_launcher(shell)"))
+        render = source[source.index("static void render_launcher(shell_state *shell)") :]
+        render = render[: render.index("static void render_metrics")]
+        self.assertIn("msys_native_launcher_layout_reconcile", render)
+        self.assertIn("lv_button_create(grid)", render)
 
     def test_phase_two_role_boundary_does_not_claim_missing_contracts(self) -> None:
         source = (ROOT / "README.md").read_text(encoding="utf-8")
