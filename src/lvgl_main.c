@@ -1,0 +1,1202 @@
+#define _POSIX_C_SOURCE 200809L
+
+#include "msys_shell_native/catalog.h"
+#include "msys_shell_native/image.h"
+#include "msys_shell_native/model.h"
+#include "msys_shell_native/system_metrics.h"
+
+#include "msys/mipc.h"
+#include "msys_ui/document.h"
+#include "msys_ui/fonts.h"
+#include "msys_ui/runtime.h"
+#include "msys_ui/theme.h"
+
+#include <errno.h>
+#include <limits.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#define APP_VERSION "0.5.0"
+#define SURFACE_COUNT 4u
+#define BAR_HEIGHT 42
+#define ROOT_WIDTH 320
+#define ROOT_HEIGHT 480
+#define WORK_HEIGHT (ROOT_HEIGHT - BAR_HEIGHT * 2)
+#define DRAW_ROWS 48
+#define MAX_PENDING 16u
+#define MAX_BINDINGS (MSYS_NATIVE_MAX_APPS + MSYS_NATIVE_MAX_TASKS * 2u)
+#define XML_WATCH_INTERVAL_MS 250u
+#define METRICS_INTERVAL_MS 1000u
+
+enum shell_surface_id {
+    SURFACE_LAUNCHER = 0,
+    SURFACE_CHROME,
+    SURFACE_NAVIGATION,
+    SURFACE_OVERVIEW
+};
+
+enum pending_kind {
+    PENDING_NONE = 0,
+    PENDING_APPS,
+    PENDING_TASKS,
+    PENDING_TASK_RESOURCES,
+    PENDING_START,
+    PENDING_FOCUS,
+    PENDING_CLOSE,
+    PENDING_NAVIGATION
+};
+
+enum binding_action {
+    BIND_START_APP = 1,
+    BIND_FOCUS_TASK,
+    BIND_CLOSE_TASK
+};
+
+typedef struct shell_state shell_state;
+
+typedef struct {
+    shell_state *shell;
+    enum shell_surface_id id;
+    msys_ui_surface_t *surface;
+    msys_ui_theme_t *theme;
+    msys_ui_document_t *document;
+    char path[PATH_MAX];
+} shell_view;
+
+typedef struct {
+    uint64_t id;
+    enum pending_kind kind;
+    size_t index;
+} pending_call;
+
+typedef struct {
+    shell_state *shell;
+    enum binding_action action;
+    size_t index;
+} ui_binding;
+
+typedef struct {
+    lv_image_dsc_t descriptor;
+    uint8_t *pixels;
+} ui_bitmap;
+
+struct shell_state {
+    msys_ui_runtime_t *runtime;
+    const msys_ui_anim_policy_t *policy;
+    shell_view views[SURFACE_COUNT];
+    msys_mipc_client ipc;
+    int supervised;
+    uint64_t next_request_id;
+    pending_call pending[MAX_PENDING];
+    char *packet;
+    msys_native_app apps[MSYS_NATIVE_MAX_APPS];
+    size_t app_count;
+    msys_native_task tasks[MSYS_NATIVE_MAX_TASKS];
+    size_t task_count;
+    ui_bitmap app_icons[MSYS_NATIVE_MAX_APPS];
+    ui_bitmap task_previews[MSYS_NATIVE_MAX_TASKS];
+    ui_binding bindings[MAX_BINDINGS];
+    size_t binding_count;
+    msys_native_system_metrics metrics;
+    uint64_t next_metrics_at;
+    uint64_t next_xml_watch_at;
+    uint64_t run_until;
+    int overview_visible;
+    int overview_pending;
+    int watch_ui;
+    int chinese;
+    char ui_dir[PATH_MAX];
+    char clock_text[16];
+};
+
+static volatile sig_atomic_t stopping;
+static shell_state *active_shell;
+
+static uint64_t monotonic_ms(void)
+{
+    struct timespec value;
+    (void)clock_gettime(CLOCK_MONOTONIC, &value);
+    return (uint64_t)value.tv_sec * 1000u + (uint64_t)value.tv_nsec / 1000000u;
+}
+
+static void signal_handler(int signal_number)
+{
+    (void)signal_number;
+    stopping = 1;
+}
+
+static const char *localized(const shell_state *shell, const char *zh,
+                             const char *en)
+{
+    return shell->chinese != 0 ? zh : en;
+}
+
+static int locale_is_chinese(void)
+{
+    const char *locale = getenv("MSYS_LOCALE");
+    if(locale == NULL || locale[0] == '\0') locale = getenv("LANG");
+    return locale != NULL && strncmp(locale, "zh", 2u) == 0;
+}
+
+static lv_obj_t *view_object(shell_view *view, const char *name)
+{
+    if(view == NULL || view->document == NULL) return NULL;
+    return msys_ui_document_find(view->document, name);
+}
+
+static void set_label(shell_view *view, const char *name, const char *text)
+{
+    lv_obj_t *object = view_object(view, name);
+    if(object != NULL) lv_label_set_text(object, text != NULL ? text : "");
+}
+
+static void bitmap_dispose(ui_bitmap *bitmap)
+{
+    if(bitmap == NULL) return;
+    free(bitmap->pixels);
+    memset(bitmap, 0, sizeof(*bitmap));
+}
+
+static void bitmaps_dispose(ui_bitmap *items, size_t count)
+{
+    size_t index;
+    for(index = 0u; index < count; index++) bitmap_dispose(&items[index]);
+}
+
+static int bitmap_load(ui_bitmap *bitmap, const char *path, int width, int height)
+{
+    msys_native_ppm source = {0};
+    size_t bytes;
+    int x;
+    int y;
+    if(bitmap == NULL || path == NULL || path[0] == '\0' || width <= 0 ||
+       height <= 0)
+        return 0;
+    bitmap_dispose(bitmap);
+    if(msys_native_ppm_load(path, 8u * 1024u * 1024u, &source) == 0) return 0;
+    bytes = (size_t)width * (size_t)height * 2u;
+    bitmap->pixels = malloc(bytes);
+    if(bitmap->pixels == NULL) {
+        msys_native_ppm_free(&source);
+        return 0;
+    }
+    for(y = 0; y < height; y++) {
+        for(x = 0; x < width; x++) {
+            unsigned char rgb[3];
+            uint16_t pixel;
+            size_t offset = ((size_t)y * (size_t)width + (size_t)x) * 2u;
+            if(msys_native_ppm_sample_resized(&source, width, height, x, y,
+                                               rgb) == 0) {
+                rgb[0] = rgb[1] = rgb[2] = 0u;
+            }
+            pixel = (uint16_t)(((uint16_t)(rgb[0] & 0xf8u) << 8u) |
+                               ((uint16_t)(rgb[1] & 0xfcu) << 3u) |
+                               ((uint16_t)rgb[2] >> 3u));
+            bitmap->pixels[offset] = (uint8_t)(pixel & 0xffu);
+            bitmap->pixels[offset + 1u] = (uint8_t)(pixel >> 8u);
+        }
+    }
+    msys_native_ppm_free(&source);
+    bitmap->descriptor.header.magic = LV_IMAGE_HEADER_MAGIC;
+    bitmap->descriptor.header.cf = LV_COLOR_FORMAT_RGB565;
+    bitmap->descriptor.header.w = (uint16_t)width;
+    bitmap->descriptor.header.h = (uint16_t)height;
+    bitmap->descriptor.header.stride = (uint16_t)(width * 2);
+    bitmap->descriptor.data_size = (uint32_t)bytes;
+    bitmap->descriptor.data = bitmap->pixels;
+    return 1;
+}
+
+static pending_call *pending_find(shell_state *shell, uint64_t id)
+{
+    size_t index;
+    for(index = 0u; index < MAX_PENDING; index++) {
+        if(shell->pending[index].id == id) return &shell->pending[index];
+    }
+    return NULL;
+}
+
+static pending_call *pending_allocate(shell_state *shell)
+{
+    size_t index;
+    for(index = 0u; index < MAX_PENDING; index++) {
+        if(shell->pending[index].id == 0u) return &shell->pending[index];
+    }
+    return NULL;
+}
+
+static uint64_t send_call(shell_state *shell, enum pending_kind kind,
+                          size_t index, const char *target, const char *method,
+                          const char *payload, int idempotent)
+{
+    pending_call *pending;
+    uint64_t deadline;
+    uint64_t id;
+    if(shell->supervised == 0) return 0u;
+    pending = pending_allocate(shell);
+    if(pending == NULL) return 0u;
+    id = ++shell->next_request_id;
+    if(id == 0u) id = ++shell->next_request_id;
+    deadline = monotonic_ms() + 8000u;
+    if(msys_mipc_send_call_json(&shell->ipc, id, target, method, payload,
+                                deadline, idempotent) != MSYS_MIPC_OK)
+        return 0u;
+    pending->id = id;
+    pending->kind = kind;
+    pending->index = index;
+    return id;
+}
+
+static int json_payload_copy(const char *packet, char **output)
+{
+    const char *raw = NULL;
+    size_t length = 0u;
+    char *copy;
+    if(msys_mipc_json_get_raw(packet, "payload", &raw, &length) != MSYS_MIPC_OK)
+        return 0;
+    copy = malloc(length + 1u);
+    if(copy == NULL) return 0;
+    memcpy(copy, raw, length);
+    copy[length] = '\0';
+    *output = copy;
+    return 1;
+}
+
+static int component_payload(const char *component, char *output,
+                             size_t capacity)
+{
+    char escaped[MSYS_NATIVE_COMPONENT_CAPACITY * 2u];
+    int written;
+    if(component == NULL || strchr(component, ':') == NULL ||
+       msys_native_json_escape(component, escaped, sizeof(escaped)) == 0)
+        return 0;
+    written = snprintf(output, capacity, "{\"component\":\"%s\"}", escaped);
+    return written >= 0 && (size_t)written < capacity;
+}
+
+static int window_payload(const char *window_id, char *output, size_t capacity)
+{
+    char escaped[MSYS_NATIVE_WINDOW_ID_CAPACITY * 2u];
+    int written;
+    if(window_id == NULL || window_id[0] == '\0' ||
+       msys_native_json_escape(window_id, escaped, sizeof(escaped)) == 0)
+        return 0;
+    written = snprintf(output, capacity, "{\"id\":\"%s\"}", escaped);
+    return written >= 0 && (size_t)written < capacity;
+}
+
+static void toast_delete_cb(lv_timer_t *timer)
+{
+    lv_obj_t *toast = lv_timer_get_user_data(timer);
+    if(toast != NULL && lv_obj_is_valid(toast)) lv_obj_delete(toast);
+    lv_timer_delete(timer);
+}
+
+static void show_toast(shell_state *shell, const char *message)
+{
+    shell_view *view = &shell->views[SURFACE_LAUNCHER];
+    lv_obj_t *toast;
+    lv_obj_t *label;
+    lv_obj_t *screen = msys_ui_surface_screen(view->surface);
+    toast = lv_obj_create(screen);
+    lv_obj_add_style(toast, msys_ui_theme_toast(view->theme), LV_PART_MAIN);
+    lv_obj_set_size(toast, 270, LV_SIZE_CONTENT);
+    lv_obj_align(toast, LV_ALIGN_TOP_MID, 0, 8);
+    label = lv_label_create(toast);
+    lv_obj_set_width(label, 244);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(label, message);
+    lv_obj_set_style_text_font(label, msys_ui_theme_font(view->theme, 14),
+                               LV_PART_MAIN);
+    msys_ui_animate_toast(toast, shell->policy, true);
+    (void)lv_timer_create(toast_delete_cb, 1800u, toast);
+}
+
+static void opening_delete_cb(lv_timer_t *timer)
+{
+    lv_obj_t *object = lv_timer_get_user_data(timer);
+    if(object != NULL && lv_obj_is_valid(object)) lv_obj_delete(object);
+    lv_timer_delete(timer);
+}
+
+static void show_opening(shell_state *shell, const char *name)
+{
+    shell_view *view = &shell->views[SURFACE_LAUNCHER];
+    lv_obj_t *overlay = lv_obj_create(msys_ui_surface_screen(view->surface));
+    lv_obj_t *label;
+    lv_obj_set_size(overlay, 86, 86);
+    lv_obj_align(overlay, LV_ALIGN_CENTER, 0, -8);
+    lv_obj_set_style_radius(overlay, 24, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(overlay, lv_color_hex(0x3f66e8), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(overlay, 0, LV_PART_MAIN);
+    label = lv_label_create(overlay);
+    lv_obj_set_width(label, 72);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+    lv_label_set_text(label, name);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_set_style_text_font(label, msys_ui_theme_font(view->theme, 14),
+                               LV_PART_MAIN);
+    lv_obj_center(label);
+    msys_ui_animate_opening(overlay, shell->policy);
+    (void)lv_timer_create(opening_delete_cb, 750u, overlay);
+}
+
+static ui_binding *new_binding(shell_state *shell, enum binding_action action,
+                               size_t index)
+{
+    ui_binding *binding;
+    if(shell->binding_count >= MAX_BINDINGS) return NULL;
+    binding = &shell->bindings[shell->binding_count++];
+    binding->shell = shell;
+    binding->action = action;
+    binding->index = index;
+    return binding;
+}
+
+static void request_apps(shell_state *shell);
+static void request_tasks(shell_state *shell);
+static void show_overview(shell_state *shell);
+static void hide_overview(shell_state *shell);
+static void render_launcher(shell_state *shell);
+static void render_overview(shell_state *shell);
+
+static void start_app(shell_state *shell, size_t index)
+{
+    char payload[MSYS_NATIVE_COMPONENT_CAPACITY * 2u + 32u];
+    if(index >= shell->app_count ||
+       component_payload(shell->apps[index].component, payload,
+                         sizeof(payload)) == 0)
+        return;
+    show_opening(shell, shell->apps[index].name);
+    if(send_call(shell, PENDING_START, index, "msys.core", "start", payload,
+                 0) == 0u)
+        show_toast(shell, localized(shell, "无法启动应用", "Unable to start app"));
+}
+
+static void focus_task(shell_state *shell, size_t index)
+{
+    char payload[MSYS_NATIVE_COMPONENT_CAPACITY * 2u + 32u];
+    const char *target;
+    const char *method;
+    if(index >= shell->task_count) return;
+    if(shell->tasks[index].component[0] != '\0') {
+        if(component_payload(shell->tasks[index].component, payload,
+                             sizeof(payload)) == 0)
+            return;
+        target = "msys.core";
+        method = "start";
+    }
+    else {
+        if(window_payload(shell->tasks[index].window_id, payload,
+                          sizeof(payload)) == 0)
+            return;
+        target = "role:window-manager";
+        method = "focus_window";
+    }
+    if(send_call(shell, PENDING_FOCUS, index, target, method, payload, 0) != 0u)
+        hide_overview(shell);
+}
+
+static void close_task(shell_state *shell, size_t index)
+{
+    char payload[MSYS_NATIVE_COMPONENT_CAPACITY * 2u + 32u];
+    const char *target;
+    const char *method;
+    if(index >= shell->task_count) return;
+    if(shell->tasks[index].component[0] != '\0') {
+        if(component_payload(shell->tasks[index].component, payload,
+                             sizeof(payload)) == 0)
+            return;
+        target = "msys.core";
+        method = "stop";
+    }
+    else {
+        if(window_payload(shell->tasks[index].window_id, payload,
+                          sizeof(payload)) == 0)
+            return;
+        target = "role:window-manager";
+        method = "close_window";
+    }
+    (void)send_call(shell, PENDING_CLOSE, index, target, method, payload, 0);
+}
+
+static void item_event_cb(lv_event_t *event)
+{
+    ui_binding *binding = lv_event_get_user_data(event);
+    lv_event_code_t code = lv_event_get_code(event);
+    lv_obj_t *object = lv_event_get_current_target(event);
+    if(binding == NULL || binding->shell == NULL) return;
+    if(code == LV_EVENT_PRESSED)
+        msys_ui_animate_press(object, binding->shell->policy, true);
+    else if(code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST)
+        msys_ui_animate_press(object, binding->shell->policy, false);
+    else if(code == LV_EVENT_CLICKED) {
+        if(binding->action == BIND_START_APP)
+            start_app(binding->shell, binding->index);
+        else if(binding->action == BIND_FOCUS_TASK)
+            focus_task(binding->shell, binding->index);
+        else if(binding->action == BIND_CLOSE_TASK)
+            close_task(binding->shell, binding->index);
+    }
+}
+
+static lv_obj_t *make_image(lv_obj_t *parent, ui_bitmap *bitmap, int width,
+                            int height)
+{
+    lv_obj_t *image;
+    if(bitmap == NULL || bitmap->pixels == NULL) return NULL;
+    image = lv_image_create(parent);
+    lv_image_set_src(image, &bitmap->descriptor);
+    lv_obj_set_size(image, width, height);
+    lv_obj_set_style_radius(image, 12, LV_PART_MAIN);
+    lv_obj_set_style_clip_corner(image, true, LV_PART_MAIN);
+    return image;
+}
+
+static void render_launcher(shell_state *shell)
+{
+    shell_view *view = &shell->views[SURFACE_LAUNCHER];
+    lv_obj_t *grid = view_object(view, "app_grid");
+    size_t index;
+    shell->binding_count = 0u;
+    bitmaps_dispose(shell->app_icons, MSYS_NATIVE_MAX_APPS);
+    if(grid == NULL) return;
+    lv_obj_clean(grid);
+    for(index = 0u; index < shell->app_count; index++) {
+        ui_binding *binding = new_binding(shell, BIND_START_APP, index);
+        lv_obj_t *tile = lv_button_create(grid);
+        lv_obj_t *icon;
+        lv_obj_t *name;
+        lv_obj_set_size(tile, 88, 104);
+        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_radius(tile, 18, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(tile, lv_color_hex(0xffffff), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(tile, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(tile, lv_color_hex(0xdde4ef), LV_PART_MAIN);
+        lv_obj_set_style_shadow_width(tile, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(tile, 6, LV_PART_MAIN);
+        if(bitmap_load(&shell->app_icons[index], shell->apps[index].icon_path,
+                       54, 54) != 0)
+            icon = make_image(tile, &shell->app_icons[index], 54, 54);
+        else {
+            icon = lv_obj_create(tile);
+            lv_obj_set_size(icon, 54, 54);
+            lv_obj_set_style_radius(icon, 16, LV_PART_MAIN);
+            lv_obj_set_style_bg_color(icon, lv_color_hex(0x3f66e8), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_set_style_border_width(icon, 0, LV_PART_MAIN);
+            {
+                lv_obj_t *symbol = lv_label_create(icon);
+                char initial[5] = "M";
+                size_t bytes = strlen(shell->apps[index].name);
+                if(bytes > 0u) {
+                    size_t take = ((unsigned char)shell->apps[index].name[0] & 0x80u) != 0u
+                                      ? (bytes >= 3u ? 3u : bytes)
+                                      : 1u;
+                    memcpy(initial, shell->apps[index].name, take);
+                    initial[take] = '\0';
+                }
+                lv_label_set_text(symbol, initial);
+                lv_obj_set_style_text_color(symbol, lv_color_hex(0xffffff),
+                                             LV_PART_MAIN);
+                lv_obj_set_style_text_font(symbol,
+                    msys_ui_theme_font(view->theme, 20), LV_PART_MAIN);
+                lv_obj_center(symbol);
+            }
+        }
+        (void)icon;
+        name = lv_label_create(tile);
+        lv_obj_set_width(name, 76);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        lv_label_set_text(name, shell->apps[index].name);
+        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_set_style_text_color(name, lv_color_hex(0x253047), LV_PART_MAIN);
+        lv_obj_set_style_text_font(name, msys_ui_theme_font(view->theme, 14),
+                                   LV_PART_MAIN);
+        if(binding != NULL)
+            lv_obj_add_event_cb(tile, item_event_cb, LV_EVENT_ALL, binding);
+    }
+    set_label(view, "launcher_status",
+              shell->app_count == 0u
+                  ? localized(shell, "没有可启动的应用", "No launchable apps")
+                  : "");
+}
+
+static void render_metrics(shell_state *shell)
+{
+    char text[80];
+    if(msys_native_system_metrics_sample(&shell->metrics) != 0 &&
+       msys_native_system_metrics_format(
+           &shell->metrics, localized(shell, "CPU", "CPU"),
+           localized(shell, "内存", "Memory"), text, sizeof(text)) != 0)
+        set_label(&shell->views[SURFACE_OVERVIEW], "metrics", text);
+}
+
+static void render_overview(shell_state *shell)
+{
+    shell_view *view = &shell->views[SURFACE_OVERVIEW];
+    lv_obj_t *grid = view_object(view, "task_grid");
+    size_t index;
+    bitmaps_dispose(shell->task_previews, MSYS_NATIVE_MAX_TASKS);
+    if(grid == NULL) return;
+    lv_obj_clean(grid);
+    shell->binding_count = shell->app_count;
+    for(index = 0u; index < shell->task_count; index++) {
+        ui_binding *focus = new_binding(shell, BIND_FOCUS_TASK, index);
+        ui_binding *close = new_binding(shell, BIND_CLOSE_TASK, index);
+        lv_obj_t *card = lv_button_create(grid);
+        lv_obj_t *preview;
+        lv_obj_t *row;
+        lv_obj_t *title;
+        lv_obj_t *memory;
+        lv_obj_t *close_button;
+        char memory_text[48];
+        const char *display_name = msys_native_task_display_name(
+            &shell->tasks[index], shell->apps, shell->app_count);
+        lv_obj_set_size(card, 141, 154);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_radius(card, 18, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0xffffff), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(card, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(card, lv_color_hex(0xd7deea), LV_PART_MAIN);
+        lv_obj_set_style_shadow_width(card, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(card, 5, LV_PART_MAIN);
+        lv_obj_set_style_pad_row(card, 3, LV_PART_MAIN);
+        if(bitmap_load(&shell->task_previews[index], shell->tasks[index].thumbnail,
+                       129, 91) != 0)
+            preview = make_image(card, &shell->task_previews[index], 129, 91);
+        else {
+            preview = lv_obj_create(card);
+            lv_obj_set_size(preview, 129, 91);
+            lv_obj_set_style_radius(preview, 12, LV_PART_MAIN);
+            lv_obj_set_style_bg_color(preview, lv_color_hex(0xe8edf5), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(preview, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_set_style_border_width(preview, 0, LV_PART_MAIN);
+            {
+                lv_obj_t *placeholder = lv_label_create(preview);
+                lv_label_set_text(placeholder, localized(shell, "等待截图", "No preview"));
+                lv_obj_set_style_text_font(placeholder,
+                    msys_ui_theme_font(view->theme, 14), LV_PART_MAIN);
+                lv_obj_set_style_text_color(placeholder, lv_color_hex(0x69758a),
+                                             LV_PART_MAIN);
+                lv_obj_center(placeholder);
+            }
+        }
+        (void)preview;
+        row = lv_obj_create(card);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, 129, 43);
+        title = lv_label_create(row);
+        lv_obj_set_width(title, 95);
+        lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+        lv_label_set_text(title, display_name);
+        lv_obj_set_style_text_font(title, msys_ui_theme_font(view->theme, 14),
+                                   LV_PART_MAIN);
+        lv_obj_set_style_text_color(title, lv_color_hex(0x253047), LV_PART_MAIN);
+        lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+        if(shell->tasks[index].pss_available != 0)
+            (void)snprintf(memory_text, sizeof(memory_text), "PSS %.1f MB",
+                           (double)shell->tasks[index].pss_kib / 1024.0);
+        else if(shell->tasks[index].rss_available != 0)
+            (void)snprintf(memory_text, sizeof(memory_text), "RSS %.1f MB",
+                           (double)shell->tasks[index].rss_kib / 1024.0);
+        else
+            (void)snprintf(memory_text, sizeof(memory_text), "%s",
+                           localized(shell, "内存 --", "Memory --"));
+        memory = lv_label_create(row);
+        lv_label_set_text(memory, memory_text);
+        lv_obj_set_style_text_font(memory, msys_ui_theme_font(view->theme, 12),
+                                   LV_PART_MAIN);
+        lv_obj_set_style_text_color(memory, lv_color_hex(0x69758a), LV_PART_MAIN);
+        lv_obj_align(memory, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        close_button = lv_button_create(row);
+        lv_obj_set_size(close_button, 28, 28);
+        lv_obj_align(close_button, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_set_style_radius(close_button, 14, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(close_button, lv_color_hex(0xf0f3f8), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(close_button, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_shadow_width(close_button, 0, LV_PART_MAIN);
+        {
+            lv_obj_t *label = lv_label_create(close_button);
+            lv_label_set_text(label, "×");
+            lv_obj_set_style_text_color(label, lv_color_hex(0x5d6678), LV_PART_MAIN);
+            lv_obj_center(label);
+        }
+        if(focus != NULL) lv_obj_add_event_cb(card, item_event_cb, LV_EVENT_ALL, focus);
+        if(close != NULL)
+            lv_obj_add_event_cb(close_button, item_event_cb, LV_EVENT_ALL, close);
+    }
+    set_label(view, "overview_status",
+              shell->task_count == 0u
+                  ? localized(shell, "没有最近任务", "No recent tasks")
+                  : "");
+    render_metrics(shell);
+}
+
+static void request_apps(shell_state *shell)
+{
+    set_label(&shell->views[SURFACE_LAUNCHER], "launcher_status",
+              localized(shell, "正在读取应用…", "Loading apps…"));
+    if(send_call(shell, PENDING_APPS, 0u, "msys.core", "list_apps", "{}", 1) ==
+       0u) {
+        set_label(&shell->views[SURFACE_LAUNCHER], "launcher_status",
+                  localized(shell, "Core 暂不可用", "Core is unavailable"));
+    }
+}
+
+static void request_tasks(shell_state *shell)
+{
+    if(send_call(shell, PENDING_TASKS, 0u, "role:window-manager", "list_windows",
+                 "{}", 1) == 0u) {
+        shell->overview_pending = 0;
+        show_toast(shell,
+                   localized(shell, "窗口管理器暂不可用", "Window manager unavailable"));
+    }
+}
+
+static void show_overview(shell_state *shell)
+{
+    if(shell->overview_visible != 0) return;
+    shell->overview_pending = 1;
+    set_label(&shell->views[SURFACE_OVERVIEW], "overview_status",
+              localized(shell, "正在读取最近任务…", "Loading recent tasks…"));
+    request_tasks(shell);
+}
+
+static void present_overview(shell_state *shell)
+{
+    lv_obj_t *root;
+    shell->overview_pending = 0;
+    shell->overview_visible = 1;
+    msys_ui_surface_show(shell->views[SURFACE_OVERVIEW].surface);
+    root = msys_ui_document_root(shell->views[SURFACE_OVERVIEW].document);
+    if(root != NULL) msys_ui_animate_opening(root, shell->policy);
+}
+
+static void hide_overview(shell_state *shell)
+{
+    shell->overview_pending = 0;
+    if(shell->overview_visible == 0) return;
+    shell->overview_visible = 0;
+    msys_ui_surface_hide(shell->views[SURFACE_OVERVIEW].surface);
+}
+
+static void send_navigation(shell_state *shell, const char *action)
+{
+    char payload[96];
+    if(strcmp(action, "apps") == 0) {
+        if(shell->overview_visible != 0 || shell->overview_pending != 0)
+            hide_overview(shell);
+        else
+            show_overview(shell);
+        return;
+    }
+    if(strcmp(action, "back") == 0 &&
+       (shell->overview_visible != 0 || shell->overview_pending != 0)) {
+        hide_overview(shell);
+        return;
+    }
+    if(strcmp(action, "home") == 0) hide_overview(shell);
+    (void)snprintf(payload, sizeof(payload),
+                   "{\"action\":\"%s\",\"input\":\"button\"}", action);
+    (void)send_call(shell, PENDING_NAVIGATION, 0u, "role:window-manager",
+                    "navigation_action", payload, 0);
+}
+
+static void xml_action_cb(lv_event_t *event)
+{
+    const char *action = lv_event_get_user_data(event);
+    if(active_shell == NULL || action == NULL) return;
+    if(strcmp(action, "back") == 0 || strcmp(action, "home") == 0 ||
+       strcmp(action, "apps") == 0)
+        send_navigation(active_shell, action);
+    else if(strcmp(action, "close-overview") == 0)
+        hide_overview(active_shell);
+    else if(strcmp(action, "notifications") == 0)
+        show_toast(active_shell,
+                   localized(active_shell, "消息中心正在迁移到 LVGL",
+                             "Notification center migration is in progress"));
+    else if(strcmp(action, "controls") == 0)
+        show_toast(active_shell,
+                   localized(active_shell, "控制中心正在迁移到 LVGL",
+                             "Quick controls migration is in progress"));
+}
+
+static int bind_document(lv_xml_component_scope_t *scope, void *user_data)
+{
+    shell_view *view = user_data;
+    if(scope == NULL || view == NULL || view->theme == NULL) return -1;
+    if(lv_xml_register_font(scope, "msys_12", msys_ui_theme_font(view->theme, 12)) !=
+           LV_RESULT_OK ||
+       lv_xml_register_font(scope, "msys_14", msys_ui_theme_font(view->theme, 14)) !=
+           LV_RESULT_OK ||
+       lv_xml_register_font(scope, "msys_16", msys_ui_theme_font(view->theme, 16)) !=
+           LV_RESULT_OK ||
+       lv_xml_register_font(scope, "msys_20", msys_ui_theme_font(view->theme, 20)) !=
+           LV_RESULT_OK ||
+       lv_xml_register_event_cb(scope, "shell_action", xml_action_cb) != LV_RESULT_OK)
+        return -1;
+    return 0;
+}
+
+static void localize_documents(shell_state *shell)
+{
+    set_label(&shell->views[SURFACE_LAUNCHER], "launcher_title",
+              localized(shell, "应用", "Apps"));
+    set_label(&shell->views[SURFACE_LAUNCHER], "launcher_hint",
+              localized(shell, "轻触启动，长按查看详情", "Tap to open"));
+    set_label(&shell->views[SURFACE_OVERVIEW], "overview_title",
+              localized(shell, "最近任务", "Recent tasks"));
+}
+
+static void update_clock(shell_state *shell)
+{
+    time_t current = time(NULL);
+    struct tm local;
+    char text[16];
+    if(localtime_r(&current, &local) == NULL ||
+       strftime(text, sizeof(text), "%H:%M:%S", &local) == 0u)
+        return;
+    if(strcmp(text, shell->clock_text) != 0) {
+        (void)snprintf(shell->clock_text, sizeof(shell->clock_text), "%s", text);
+        set_label(&shell->views[SURFACE_CHROME], "clock", text);
+    }
+}
+
+static int resolve_ui_dir(char *output, size_t capacity)
+{
+    const char *environment = getenv("MSYS_SHELL_UI_DIR");
+    char executable[PATH_MAX];
+    ssize_t length;
+    char *files;
+    if(environment != NULL && environment[0] != '\0') {
+        int written = snprintf(output, capacity, "%s", environment);
+        return written >= 0 && (size_t)written < capacity;
+    }
+    length = readlink("/proc/self/exe", executable, sizeof(executable) - 1u);
+    if(length > 0) {
+        executable[length] = '\0';
+        files = strstr(executable, "/files/bin/");
+        if(files != NULL) {
+            int written;
+            *files = '\0';
+            written = snprintf(output, capacity, "%s/files/share/ui/shell", executable);
+            if(written >= 0 && (size_t)written < capacity) return 1;
+        }
+    }
+    return snprintf(output, capacity, "files/share/ui/shell") > 0;
+}
+
+static int load_document(shell_state *shell, enum shell_surface_id id,
+                         const char *filename)
+{
+    shell_view *view = &shell->views[id];
+    msys_ui_document_config_t config = {
+        .max_bytes = 64u * 1024u,
+        .bind = bind_document,
+        .user_data = view,
+    };
+    int written = snprintf(view->path, sizeof(view->path), "%s/%s", shell->ui_dir,
+                           filename);
+    if(written < 0 || (size_t)written >= sizeof(view->path)) return 0;
+    view->document = msys_ui_document_create(msys_ui_surface_screen(view->surface),
+                                              &config);
+    return view->document != NULL &&
+           msys_ui_document_load_file(view->document, view->path) ==
+               MSYS_UI_DOCUMENT_OK;
+}
+
+static int create_view(shell_state *shell, enum shell_surface_id id,
+                       const msys_ui_surface_config_t *config)
+{
+    shell_view *view = &shell->views[id];
+    view->shell = shell;
+    view->id = id;
+    view->surface = msys_ui_surface_create(shell->runtime, config);
+    if(view->surface == NULL) return 0;
+    view->theme = msys_ui_theme_create(msys_ui_surface_display(view->surface),
+                                       shell->policy);
+    if(view->theme == NULL) return 0;
+    msys_ui_theme_set_font_provider(view->theme, msys_ui_font_provider, NULL,
+                                    shell->chinese != 0 ? "zh-CN" : "en-US");
+    return 1;
+}
+
+static int initialize_ui(shell_state *shell, const char *display_name,
+                         msys_ui_output_t output, bool reduced_motion)
+{
+    msys_ui_runtime_config_t runtime_config = {
+        .display_name = display_name,
+        .output = output,
+        .reduced_motion = reduced_motion,
+    };
+    const msys_ui_surface_config_t configs[SURFACE_COUNT] = {
+        {.x=0, .y=BAR_HEIGHT, .width=ROOT_WIDTH, .height=WORK_HEIGHT,
+         .draw_rows=DRAW_ROWS, .title="MSYS Launcher",
+         .app_id="org.msys.shell.native.launcher",
+         .component_id="org.msys.shell.native:desktop-shell-lvgl",
+         .role="launcher", .wm_instance="msys-shell-lvgl",
+         .override_redirect=false},
+        {.x=0, .y=0, .width=ROOT_WIDTH, .height=BAR_HEIGHT,
+         .draw_rows=BAR_HEIGHT, .title="MSYS Chrome",
+         .app_id="org.msys.shell.native.chrome",
+         .component_id="org.msys.shell.native:desktop-shell-lvgl",
+         .role="system-chrome", .wm_instance="msys-shell-lvgl",
+         .override_redirect=true},
+        {.x=0, .y=ROOT_HEIGHT-BAR_HEIGHT, .width=ROOT_WIDTH, .height=BAR_HEIGHT,
+         .draw_rows=BAR_HEIGHT, .title="MSYS Navigation",
+         .app_id="org.msys.shell.native.navigation-pill",
+         .component_id="org.msys.shell.native:desktop-shell-lvgl",
+         .role="navigation-bar", .wm_instance="msys-shell-lvgl",
+         .override_redirect=true},
+        {.x=0, .y=BAR_HEIGHT, .width=ROOT_WIDTH, .height=WORK_HEIGHT,
+         .draw_rows=DRAW_ROWS, .title="MSYS Recents",
+         .app_id="org.msys.shell.task-switcher",
+         .component_id="org.msys.shell.native:desktop-shell-lvgl",
+         .role="task-switcher", .wm_instance="msys-shell-lvgl",
+         .override_redirect=true},
+    };
+    const char *documents[SURFACE_COUNT] = {
+        "launcher.xml", "chrome.xml", "navigation.xml", "overview.xml"
+    };
+    size_t index;
+    shell->runtime = msys_ui_runtime_create(&runtime_config);
+    if(shell->runtime == NULL) return 0;
+    shell->policy = msys_ui_runtime_policy(shell->runtime);
+    (void)msys_ui_dynamic_fonts_init(NULL);
+    for(index = 0u; index < SURFACE_COUNT; index++) {
+        if(create_view(shell, (enum shell_surface_id)index, &configs[index]) == 0 ||
+           load_document(shell, (enum shell_surface_id)index, documents[index]) == 0) {
+            fprintf(stderr, "msys-shell-lvgl: cannot load %s\n", documents[index]);
+            return 0;
+        }
+    }
+    localize_documents(shell);
+    render_launcher(shell);
+    set_label(&shell->views[SURFACE_LAUNCHER], "launcher_status",
+              localized(shell, "正在读取应用…", "Loading apps…"));
+    update_clock(shell);
+    msys_ui_surface_show(shell->views[SURFACE_LAUNCHER].surface);
+    msys_ui_surface_show(shell->views[SURFACE_CHROME].surface);
+    msys_ui_surface_show(shell->views[SURFACE_NAVIGATION].surface);
+    return 1;
+}
+
+static int initialize_ipc(shell_state *shell)
+{
+    char type[32];
+    if(getenv("MSYS_CONTROL_FD") == NULL) {
+        shell->supervised = 0;
+        set_label(&shell->views[SURFACE_LAUNCHER], "launcher_status",
+                  localized(shell, "未连接 Core（预览模式）",
+                            "Core is disconnected (preview mode)"));
+        return 1;
+    }
+    shell->supervised = 1;
+    if(msys_mipc_client_from_env(&shell->ipc) != MSYS_MIPC_OK ||
+       msys_mipc_send_hello_from_env(&shell->ipc) != MSYS_MIPC_OK ||
+       msys_mipc_recv_json(&shell->ipc, shell->packet, MSYS_MIPC_RECV_CAPACITY,
+                           3000, NULL) != MSYS_MIPC_OK ||
+       msys_mipc_json_get_string(shell->packet, "type", type, sizeof(type), NULL) !=
+           MSYS_MIPC_OK ||
+       strcmp(type, "welcome") != 0) {
+        fprintf(stderr, "msys-shell-lvgl: component handshake failed\n");
+        return 0;
+    }
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.install.package_changed");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.lifecycle.transition");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.timezone.changed");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.session.preferences.changed");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.hal.changed");
+    if(msys_mipc_send_ready(&shell->ipc) != MSYS_MIPC_OK) return 0;
+    (void)msys_mipc_send_event_json(
+        &shell->ipc, "msys.role.ready",
+        "{\"role\":\"lvgl-shell\",\"roles\":[\"launcher\",\"system-chrome\",\"navigation-bar\",\"task-switcher\"]}");
+    request_apps(shell);
+    return 1;
+}
+
+static void handle_reply(shell_state *shell, const char *packet,
+                         const char *type)
+{
+    uint64_t id;
+    pending_call *owned;
+    pending_call call;
+    char *payload = NULL;
+    int success = strcmp(type, "return") == 0;
+    if(msys_mipc_json_get_u64(packet, "id", &id) != MSYS_MIPC_OK) return;
+    owned = pending_find(shell, id);
+    if(owned == NULL) return;
+    call = *owned;
+    memset(owned, 0, sizeof(*owned));
+    if(success == 0 || json_payload_copy(packet, &payload) == 0) {
+        if(call.kind == PENDING_TASKS) {
+            shell->overview_pending = 0;
+            show_toast(shell, localized(shell, "无法读取最近任务",
+                                       "Unable to load recent tasks"));
+        }
+        else if(call.kind == PENDING_APPS)
+            set_label(&shell->views[SURFACE_LAUNCHER], "launcher_status",
+                      localized(shell, "无法读取应用列表", "Unable to load apps"));
+        return;
+    }
+    if(call.kind == PENDING_APPS) {
+        if(msys_native_parse_apps(payload, shell->apps, MSYS_NATIVE_MAX_APPS,
+                                  &shell->app_count) != 0) {
+            render_launcher(shell);
+            if(shell->overview_visible != 0) render_overview(shell);
+        }
+        else {
+            shell->app_count = 0u;
+            render_launcher(shell);
+            set_label(&shell->views[SURFACE_LAUNCHER], "launcher_status",
+                      localized(shell, "应用列表格式无效",
+                                "The app list is invalid"));
+        }
+    }
+    else if(call.kind == PENDING_TASKS) {
+        if(msys_native_parse_tasks(payload, shell->tasks, MSYS_NATIVE_MAX_TASKS,
+                                   &shell->task_count) != 0) {
+            render_overview(shell);
+            if(shell->overview_pending != 0) present_overview(shell);
+            (void)send_call(shell, PENDING_TASK_RESOURCES, 0u, "msys.core",
+                            "foreground_stack", "{\"include_resources\":true}", 1);
+        }
+        else {
+            shell->overview_pending = 0;
+            show_toast(shell, localized(shell, "最近任务数据无效",
+                                       "Recent task data is invalid"));
+        }
+    }
+    else if(call.kind == PENDING_TASK_RESOURCES) {
+        (void)msys_native_apply_task_resources(payload, shell->tasks,
+                                                shell->task_count);
+        if(shell->overview_visible != 0) render_overview(shell);
+    }
+    else if(call.kind == PENDING_CLOSE) {
+        if(shell->overview_visible != 0) request_tasks(shell);
+    }
+    free(payload);
+}
+
+static void handle_call(shell_state *shell, const char *packet)
+{
+    uint64_t id;
+    char method[96];
+    if(msys_mipc_json_get_u64(packet, "id", &id) != MSYS_MIPC_OK ||
+       msys_mipc_json_get_string(packet, "method", method, sizeof(method), NULL) !=
+           MSYS_MIPC_OK)
+        return;
+    if(strcmp(method, "show_recents") == 0 || strcmp(method, "show") == 0) {
+        show_overview(shell);
+        (void)msys_mipc_send_return_json(&shell->ipc, id, "{\"ok\":true}");
+    }
+    else if(strcmp(method, "hide_overlays") == 0 || strcmp(method, "hide") == 0) {
+        hide_overview(shell);
+        (void)msys_mipc_send_return_json(&shell->ipc, id, "{\"ok\":true}");
+    }
+    else if(strcmp(method, "status") == 0) {
+        (void)msys_mipc_send_return_json(
+            &shell->ipc, id,
+            shell->overview_visible != 0
+                ? "{\"version\":\"0.5.0\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.5.0\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+    }
+    else
+        (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
+}
+
+static void handle_event(shell_state *shell, const char *packet)
+{
+    char topic[160];
+    if(msys_mipc_json_get_string(packet, "topic", topic, sizeof(topic), NULL) !=
+       MSYS_MIPC_OK)
+        return;
+    if(strcmp(topic, "msys.install.package_changed") == 0 ||
+       strcmp(topic, "msys.lifecycle.transition") == 0)
+        request_apps(shell);
+    else if(strcmp(topic, "msys.timezone.changed") == 0) {
+        tzset();
+        shell->clock_text[0] = '\0';
+        update_clock(shell);
+    }
+}
+
+static void drain_ipc(shell_state *shell)
+{
+    unsigned int count;
+    for(count = 0u; count < 16u; count++) {
+        char type[32];
+        int result = msys_mipc_recv_json(&shell->ipc, shell->packet,
+                                         MSYS_MIPC_RECV_CAPACITY, 0, NULL);
+        if(result == MSYS_MIPC_TIMEOUT) break;
+        if(result != MSYS_MIPC_OK) {
+            stopping = 1;
+            break;
+        }
+        if(msys_mipc_json_get_string(shell->packet, "type", type, sizeof(type),
+                                     NULL) != MSYS_MIPC_OK)
+            continue;
+        if(strcmp(type, "return") == 0 || strcmp(type, "error") == 0)
+            handle_reply(shell, shell->packet, type);
+        else if(strcmp(type, "call") == 0)
+            handle_call(shell, shell->packet);
+        else if(strcmp(type, "event") == 0)
+            handle_event(shell, shell->packet);
+    }
+}
+
+static void watch_documents(shell_state *shell)
+{
+    size_t index;
+    int changed = 0;
+    for(index = 0u; index < SURFACE_COUNT; index++) {
+        int result = msys_ui_document_reload_if_changed(shell->views[index].document);
+        if(result == MSYS_UI_DOCUMENT_OK) changed = 1;
+    }
+    if(changed != 0) {
+        localize_documents(shell);
+        render_launcher(shell);
+        if(shell->overview_visible != 0) render_overview(shell);
+        update_clock(shell);
+    }
+}
+
+static int event_loop(shell_state *shell)
+{
+    while(stopping == 0 &&
+          (shell->run_until == 0u || monotonic_ms() < shell->run_until)) {
+        struct pollfd descriptors[2];
+        nfds_t count = 1u;
+        uint32_t timeout;
+        uint64_t current;
+        int result;
+        size_t index;
+        if(msys_ui_runtime_pump(shell->runtime) <= 0) return -1;
+        for(index = 0u; index < SURFACE_COUNT; index++) {
+            if(msys_ui_surface_closed(shell->views[index].surface)) return 0;
+        }
+        current = monotonic_ms();
+        update_clock(shell);
+        if(shell->overview_visible != 0 && current >= shell->next_metrics_at) {
+            render_metrics(shell);
+            shell->next_metrics_at = current + METRICS_INTERVAL_MS;
+        }
+        if(shell->watch_ui != 0 && current >= shell->next_xml_watch_at) {
+            watch_documents(shell);
+            shell->next_xml_watch_at = current + XML_WATCH_INTERVAL_MS;
+        }
+        timeout = msys_ui_runtime_next_deadline_ms(shell->runtime);
+        if(timeout == LV_NO_TIMER_READY || timeout > 250u) timeout = 250u;
+        descriptors[0].fd = msys_ui_runtime_poll_fd(shell->runtime);
+        descriptors[0].events = POLLIN;
+        descriptors[0].revents = 0;
+        if(shell->supervised != 0) {
+            descriptors[1].fd = msys_mipc_client_fd(&shell->ipc);
+            descriptors[1].events = POLLIN | POLLHUP;
+            descriptors[1].revents = 0;
+            count = 2u;
+        }
+        result = poll(descriptors, count, (int)timeout);
+        if(result < 0 && errno != EINTR) return -1;
+        if(count == 2u && (descriptors[1].revents & (POLLIN | POLLHUP)) != 0)
+            drain_ipc(shell);
+    }
+    return 0;
+}
+
+static void shutdown_shell(shell_state *shell)
+{
+    size_t index;
+    bitmaps_dispose(shell->app_icons, MSYS_NATIVE_MAX_APPS);
+    bitmaps_dispose(shell->task_previews, MSYS_NATIVE_MAX_TASKS);
+    for(index = 0u; index < SURFACE_COUNT; index++) {
+        if(shell->views[index].document != NULL)
+            msys_ui_document_destroy(shell->views[index].document);
+        if(shell->views[index].theme != NULL)
+            msys_ui_theme_destroy(shell->views[index].theme);
+    }
+    if(shell->supervised != 0) msys_mipc_client_close(&shell->ipc);
+    msys_ui_dynamic_fonts_shutdown();
+    if(shell->runtime != NULL) msys_ui_runtime_destroy(shell->runtime);
+    free(shell->packet);
+}
+
+static void usage(const char *program)
+{
+    fprintf(stderr,
+            "usage: %s [--display :24] [--output spi|hdmi] [--ui-dir PATH] "
+            "[--watch-ui] [--reduced-motion] [--run-ms N]\n",
+            program);
+}
+
+int main(int argc, char **argv)
+{
+    shell_state shell;
+    const char *display_name = NULL;
+    msys_ui_output_t output = MSYS_UI_OUTPUT_SPI;
+    bool reduced_motion = false;
+    int exit_code;
+    int index;
+    memset(&shell, 0, sizeof(shell));
+    shell.chinese = locale_is_chinese();
+    shell.packet = malloc(MSYS_MIPC_RECV_CAPACITY);
+    shell.next_request_id = 100u;
+    msys_native_system_metrics_init(&shell.metrics);
+    if(shell.packet == NULL || resolve_ui_dir(shell.ui_dir, sizeof(shell.ui_dir)) == 0)
+        return 1;
+    for(index = 1; index < argc; index++) {
+        if(strcmp(argv[index], "--describe") == 0) {
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.5.0\","
+                 "\"surfaces\":[\"launcher\",\"system-chrome\","
+                 "\"navigation-bar\",\"task-switcher\"],"
+                 "\"fallback\":\"msys-shell-native\"}");
+            free(shell.packet);
+            return 0;
+        }
+        if(strcmp(argv[index], "--display") == 0 && index + 1 < argc)
+            display_name = argv[++index];
+        else if(strcmp(argv[index], "--output") == 0 && index + 1 < argc)
+            output = strcmp(argv[++index], "hdmi") == 0 ? MSYS_UI_OUTPUT_HDMI
+                                                          : MSYS_UI_OUTPUT_SPI;
+        else if(strcmp(argv[index], "--ui-dir") == 0 && index + 1 < argc)
+            (void)snprintf(shell.ui_dir, sizeof(shell.ui_dir), "%s", argv[++index]);
+        else if(strcmp(argv[index], "--watch-ui") == 0)
+            shell.watch_ui = 1;
+        else if(strcmp(argv[index], "--reduced-motion") == 0)
+            reduced_motion = true;
+        else if(strcmp(argv[index], "--run-ms") == 0 && index + 1 < argc)
+            shell.run_until = monotonic_ms() + strtoull(argv[++index], NULL, 10);
+        else {
+            usage(argv[0]);
+            free(shell.packet);
+            return 2;
+        }
+    }
+    active_shell = &shell;
+    (void)signal(SIGINT, signal_handler);
+    (void)signal(SIGTERM, signal_handler);
+    if(initialize_ui(&shell, display_name, output, reduced_motion) == 0 ||
+       initialize_ipc(&shell) == 0) {
+        shutdown_shell(&shell);
+        active_shell = NULL;
+        return 1;
+    }
+    exit_code = event_loop(&shell) == 0 ? 0 : 1;
+    shutdown_shell(&shell);
+    active_shell = NULL;
+    return exit_code;
+}

@@ -1,0 +1,33 @@
+<component>
+  <view extends="lv_obj" width="100%" height="100%" flex_flow="column"
+        scrollable="false" style_bg_color="#edf2f9" style_bg_opa="100%"
+        style_border_width="0" style_pad_left="10" style_pad_right="10"
+        style_pad_top="10" style_pad_bottom="8" style_pad_row="7">
+    <lv_obj width="100%" height="42" flex_flow="row" scrollable="false"
+            style_bg_opa="0%" style_border_width="0" style_pad_all="0"
+            style_pad_column="5">
+      <lv_label name="overview_title" text="最近任务" width="content"
+                flex_grow="1" style_text_font="msys_20"
+                style_text_color="#182033" align="left_mid"/>
+      <lv_label name="metrics" text="CPU --  内存 --" width="112"
+                style_text_font="msys_14" style_text_color="#69758a"
+                align="center"/>
+      <lv_button width="52" height="34" style_radius="13"
+                 style_bg_color="#ffffff" style_bg_opa="100%"
+                 style_shadow_width="0" style_border_width="1"
+                 style_border_color="#d7deea">
+        <lv_label text="退出" align="center" style_text_font="msys_14"
+                  style_text_color="#253047"/>
+        <lv_event-call-function trigger="clicked" callback="shell_action"
+                                user_data="close-overview"/>
+      </lv_button>
+    </lv_obj>
+    <lv_obj name="task_grid" width="100%" height="content" flex_grow="1"
+            flex_flow="row_wrap" scrollable="true" style_bg_opa="0%"
+            style_border_width="0" style_pad_all="1" style_pad_row="8"
+            style_pad_column="8"/>
+    <lv_label name="overview_status" text="正在读取最近任务…" width="100%"
+              long_mode="wrap" align="center" style_text_font="msys_14"
+              style_text_color="#69758a"/>
+  </view>
+</component>

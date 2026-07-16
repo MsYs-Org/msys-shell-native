@@ -1,0 +1,27 @@
+<component>
+  <view extends="lv_obj" width="100%" height="100%" flex_flow="column"
+        scrollable="false" style_bg_color="#f4f7fb" style_bg_opa="100%"
+        style_pad_left="12" style_pad_right="12" style_pad_top="12"
+        style_pad_bottom="6" style_pad_row="8">
+    <lv_obj width="100%" height="42" flex_flow="row" scrollable="false"
+            style_bg_opa="0%" style_border_width="0" style_pad_all="0">
+      <lv_obj width="content" height="100%" flex_grow="1" flex_flow="column"
+              scrollable="false" style_bg_opa="0%" style_border_width="0"
+              style_pad_all="0" style_pad_row="1">
+        <lv_label name="launcher_title" text="应用" style_text_font="msys_20"
+                  style_text_color="#182033"/>
+        <lv_label name="launcher_hint" text="轻触启动，长按查看详情"
+                  style_text_font="msys_14" style_text_color="#69758a"/>
+      </lv_obj>
+      <lv_label name="page_label" text="1 / 1" style_text_font="msys_14"
+                style_text_color="#69758a" align="right_mid"/>
+    </lv_obj>
+    <lv_obj name="app_grid" width="100%" height="content" flex_grow="1"
+            flex_flow="row_wrap" scrollable="true" style_bg_opa="0%"
+            style_border_width="0" style_pad_all="2" style_pad_row="8"
+            style_pad_column="8"/>
+    <lv_label name="launcher_status" text="正在读取应用…" width="100%"
+              long_mode="wrap" style_text_font="msys_14"
+              style_text_color="#69758a" align="center"/>
+  </view>
+</component>

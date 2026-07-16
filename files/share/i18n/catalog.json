@@ -7,7 +7,7 @@
   "messages": {
     "en-US": {
       "package.name": "MSYS Native Shell",
-      "package.summary": "Lean paged X11 shell with folders, wallpaper and task previews",
+      "package.summary": "Light LVGL/XML shell with Xlib fallback",
       "launcher.title": "Apps",
       "launcher.loading": "Loading applications…",
       "launcher.unavailable": "Applications unavailable",
@@ -93,7 +93,7 @@
     },
     "zh": {
       "package.name": "MSYS 原生桌面",
-      "package.summary": "支持分页、文件夹、壁纸与任务预览的轻量 X11 桌面",
+      "package.summary": "带 Xlib 回退的轻量 LVGL/XML 桌面",
       "launcher.title": "应用",
       "launcher.loading": "正在读取应用…",
       "launcher.unavailable": "应用列表不可用",

@@ -13,12 +13,13 @@ class NativeShellManifestTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.document = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
         cls.component = cls.document["components"][0]
+        cls.lvgl_component = cls.document["components"][1]
 
-    def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.4.0")
+    def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
+        self.assertEqual(self.document["package"]["version"], "0.5.0")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.4.0"', implementation)
-        self.assertEqual(len(self.document["components"]), 1)
+        self.assertIn('#define APP_VERSION "0.5.0"', implementation)
+        self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
         self.assertNotIn("MSYS_NATIVE_NAV_MODE", self.component.get("env", {}))
@@ -39,6 +40,43 @@ class NativeShellManifestTests(unittest.TestCase):
             },
         )
         self.assertTrue(all(item["exclusive"] for item in self.component["provides"]))
+
+    def test_lvgl_preview_is_one_process_with_four_dynamic_role_surfaces(self) -> None:
+        component = self.lvgl_component
+        self.assertEqual(component["id"], "desktop-shell-lvgl")
+        self.assertEqual(component["runtime"], "native")
+        self.assertEqual(component["lifecycle"], "manual")
+        self.assertEqual(component["restart"], "never")
+        self.assertEqual(
+            component["exec"],
+            ["@package/files/bin/msys-shell-lvgl", "--output", "spi"],
+        )
+        self.assertEqual(
+            set(component["x-msys-role-windows"]),
+            {"launcher", "system-chrome", "navigation-bar", "task-switcher"},
+        )
+        self.assertEqual(
+            {item["role"] for item in component["provides"]},
+            {"launcher", "system-chrome", "navigation-bar", "task-switcher"},
+        )
+        self.assertEqual(
+            component["x-msys-ui-provider"]["fallback_component"],
+            "org.msys.shell.native:desktop-shell",
+        )
+        source = (ROOT / "src" / "lvgl_main.c").read_text(encoding="utf-8")
+        self.assertIn("msys_ui_document_load_file", source)
+        self.assertIn("msys_ui_document_find", source)
+        self.assertIn("msys_native_parse_apps", source)
+        self.assertIn("msys_native_parse_tasks", source)
+        self.assertIn("msys_native_apply_task_resources", source)
+        self.assertIn("msys_native_ppm_sample_resized", source)
+        self.assertNotIn("XPutImage", source)
+        self.assertNotIn("XClearWindow", source)
+        ui_dir = ROOT / "files" / "share" / "ui" / "shell"
+        self.assertEqual(
+            {path.name for path in ui_dir.glob("*.xml")},
+            {"launcher.xml", "chrome.xml", "navigation.xml", "overview.xml"},
+        )
 
     def test_phase_two_role_boundary_does_not_claim_missing_contracts(self) -> None:
         source = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -100,7 +138,7 @@ class NativeShellManifestTests(unittest.TestCase):
         )
         self.assertEqual(
             catalog["messages"]["zh"]["package.summary"],
-            "支持分页、文件夹、壁纸与任务预览的轻量 X11 桌面",
+            "带 Xlib 回退的轻量 LVGL/XML 桌面",
         )
         self.assertEqual(
             catalog["messages"]["zh"]["warning.display_session_rebuilt"],

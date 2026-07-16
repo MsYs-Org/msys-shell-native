@@ -1,6 +1,21 @@
 # MSYS Native Shell
 
-Current source version: `0.4.0`.
+Current source version: `0.5.0`.
+
+Version 0.5.0 adds the first production-shaped LVGL 9.3/XML Shell slice beside
+the established Xlib implementation. One C process owns four independent X11
+surfaces for Launcher, system chrome, navigation, and Overview. Their light
+layouts are package-owned XML documents while catalog, mIPC, window identity,
+PPM screenshot scaling, task resource data, and navigation behavior remain C.
+The 320x480 mobile geometry is fixed to 42-pixel bars and the exact
+`0,42,320,396` workarea. Overview stays unmapped until `list_windows` returns,
+then presents a two-column grid with real PPM thumbnails and PSS/RSS values.
+The shared runtime retains exact LVGL invalid rectangles and zero idle flush.
+
+`desktop-shell-lvgl` is deliberately a manual preview provider until message
+history, Quick Controls, launcher folders/editing, pill gestures, and all
+existing preference RPCs reach parity. `desktop-shell` remains the default
+Xlib fallback and no profile is silently switched by this package revision.
 
 Version 0.4.0 replaces the mobile Launcher's unbounded vertical application
 list with fixed-capacity horizontal pages. `grid_columns`, `grid_rows`, and
@@ -90,10 +105,11 @@ This keeps the visible Exit control reliable with release-only touch drivers
 whose grabbed event can name the Recents window while carrying stale local
 coordinates.
 
-This is a lean adaptive X11 shell, implemented as one C process using Xlib
-and the dependency-free JSON mIPC C SDK. This repository supplies the shell
-package but does not modify or select any system profile; profile ownership
-stays with the integrating MSYS configuration.
+Both renderers are lean adaptive X11 shells implemented as one C process with
+the dependency-free JSON mIPC C SDK. The new frontend uses LVGL/XML on Xlib;
+the compatibility frontend draws through Xlib directly. This repository
+supplies the shell package but does not modify or select any system profile;
+profile ownership stays with the integrating MSYS configuration.
 
 ## Implemented boundary
 
@@ -128,11 +144,13 @@ live volume/mute state, or a truthful unavailable reason. Its roughly 1/5,
 leaving enough width for a headset name or degraded reason. PCM never crosses
 mIPC.
 
-The manifest advertises only the roles actually served: `launcher`,
+The default Xlib component advertises only the roles it actually serves: `launcher`,
 `system-chrome`, `navigation-bar`, `task-switcher`,
 `notification-presenter`, and `notification-center`. Each has priority 90. An integrating profile should
 select the single `org.msys.shell.native:desktop-shell` component for the roles
-it wants this process to own and supervise that component once.
+it wants this process to own and supervise that component once. The manual
+LVGL preview claims only its four implemented roles at priority 89, so merely
+installing the package cannot displace the selected fallback.
 
 Navigation mode remains profile-owned: the regular mobile/desktop profiles
 export `MSYS_NATIVE_NAV_MODE=buttons`, while `mobile-spi-pill` exports `pill`.
@@ -250,14 +268,23 @@ systemd, D-Bus, toolkit, or package manager is required.
 
 ## Build and test
 
-The build reuses the sibling SDK static library and the target's existing X11
-development files:
+The build reuses the sibling SDK and LVGL runtime static libraries plus the
+target's existing X11 development files. A normal build emits both the default
+fallback and the manual LVGL provider; neither build step fetches packages:
 
 ```sh
 make -C ../msys-sdk build/libmsys-mipc.a
 make i18n  # only after editing the shared JSON catalog
 make all test
 python3 -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+The focused LVGL/Xvfb probe parses all four package XML documents, checks role
+identity and the strict `0,42,320,396` workarea, then verifies that an idle
+Launcher does not submit another invalid rectangle:
+
+```sh
+make lvgl-probe
 ```
 
 Run the supervised protocol/RSS probe against a temporary test X server:

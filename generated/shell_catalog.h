@@ -6,7 +6,7 @@
 
 static const msys_i18n_entry shell_catalog_entries[] = {
     {"en-US", "package.name", "MSYS Native Shell"},
-    {"en-US", "package.summary", "Lean paged X11 shell with folders, wallpaper and task previews"},
+    {"en-US", "package.summary", "Light LVGL/XML shell with Xlib fallback"},
     {"en-US", "launcher.title", "Apps"},
     {"en-US", "launcher.loading", "Loading applications" "\xe2" "\x80" "\xa6"},
     {"en-US", "launcher.unavailable", "Applications unavailable"},
@@ -90,7 +90,7 @@ static const msys_i18n_entry shell_catalog_entries[] = {
     {"en-US", "error.close_failed", "Task close was rejected"},
     {"en-US", "error.launcher_layout_save", "Could not save the Home layout"},
     {"zh", "package.name", "MSYS " "\xe5" "\x8e" "\x9f" "\xe7" "\x94" "\x9f" "\xe6" "\xa1" "\x8c" "\xe9" "\x9d" "\xa2"},
-    {"zh", "package.summary", "\xe6" "\x94" "\xaf" "\xe6" "\x8c" "\x81" "\xe5" "\x88" "\x86" "\xe9" "\xa1" "\xb5" "\xe3" "\x80" "\x81" "\xe6" "\x96" "\x87" "\xe4" "\xbb" "\xb6" "\xe5" "\xa4" "\xb9" "\xe3" "\x80" "\x81" "\xe5" "\xa3" "\x81" "\xe7" "\xba" "\xb8" "\xe4" "\xb8" "\x8e" "\xe4" "\xbb" "\xbb" "\xe5" "\x8a" "\xa1" "\xe9" "\xa2" "\x84" "\xe8" "\xa7" "\x88" "\xe7" "\x9a" "\x84" "\xe8" "\xbd" "\xbb" "\xe9" "\x87" "\x8f" " X11 " "\xe6" "\xa1" "\x8c" "\xe9" "\x9d" "\xa2"},
+    {"zh", "package.summary", "\xe5" "\xb8" "\xa6" " Xlib " "\xe5" "\x9b" "\x9e" "\xe9" "\x80" "\x80" "\xe7" "\x9a" "\x84" "\xe8" "\xbd" "\xbb" "\xe9" "\x87" "\x8f" " LVGL/XML " "\xe6" "\xa1" "\x8c" "\xe9" "\x9d" "\xa2"},
     {"zh", "launcher.title", "\xe5" "\xba" "\x94" "\xe7" "\x94" "\xa8"},
     {"zh", "launcher.loading", "\xe6" "\xad" "\xa3" "\xe5" "\x9c" "\xa8" "\xe8" "\xaf" "\xbb" "\xe5" "\x8f" "\x96" "\xe5" "\xba" "\x94" "\xe7" "\x94" "\xa8" "\xe2" "\x80" "\xa6"},
     {"zh", "launcher.unavailable", "\xe5" "\xba" "\x94" "\xe7" "\x94" "\xa8" "\xe5" "\x88" "\x97" "\xe8" "\xa1" "\xa8" "\xe4" "\xb8" "\x8d" "\xe5" "\x8f" "\xaf" "\xe7" "\x94" "\xa8"},

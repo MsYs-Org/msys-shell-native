@@ -3,10 +3,10 @@
   "package": {
     "id": "org.msys.shell.native",
     "name": "MSYS Native Shell",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "kind": "system",
     "vendor": "MSYS",
-    "summary": "Lean paged Xlib shell with folders, wallpaper and task previews",
+    "summary": "Lean LVGL/XML shell with an Xlib compatibility fallback",
     "x-msys-i18n": {
       "catalog": "files/share/i18n/catalog.json",
       "name_key": "package.name",
@@ -116,7 +116,126 @@
         {"role": "task-switcher", "exclusive": true, "priority": 90},
         {"role": "notification-presenter", "exclusive": true, "priority": 90},
         {"role": "notification-center", "exclusive": true, "priority": 90}
-      ]
+      ],
+      "x-msys-ui-provider": {
+        "id": "xlib",
+        "default": true
+      }
+    },
+    {
+      "id": "desktop-shell-lvgl",
+      "name": "MSYS LVGL shell",
+      "runtime": "native",
+      "exec": [
+        "@package/files/bin/msys-shell-lvgl",
+        "--output",
+        "spi"
+      ],
+      "lifecycle": "manual",
+      "restart": "never",
+      "readiness": {"mode": "mipc-ready", "timeout_ms": 8000},
+      "after": [
+        "org.msys.openstick.ch347:x11-spi-touch-output",
+        "org.msys.x11.session:hdmi-output"
+      ],
+      "windowing": {
+        "system": "x11",
+        "display": "inherit",
+        "mode": "window",
+        "title": "MSYS Launcher",
+        "identity": {
+          "app_id": "org.msys.shell.native.launcher",
+          "x11_wm_class": "org.msys.shell.native.launcher",
+          "x11_wm_instance": "msys-shell-lvgl"
+        }
+      },
+      "x-msys-role-windows": {
+        "launcher": {
+          "system": "x11",
+          "display": "inherit",
+          "mode": "window",
+          "title": "MSYS Launcher",
+          "identity": {
+            "app_id": "org.msys.shell.native.launcher",
+            "x11_wm_class": "org.msys.shell.native.launcher",
+            "x11_wm_instance": "msys-shell-lvgl"
+          }
+        },
+        "system-chrome": {
+          "system": "x11",
+          "display": "inherit",
+          "mode": "overlay",
+          "title": "MSYS Chrome",
+          "identity": {
+            "app_id": "org.msys.shell.native.chrome",
+            "x11_wm_class": "org.msys.shell.native.chrome",
+            "x11_wm_instance": "msys-shell-lvgl"
+          },
+          "edge": "top"
+        },
+        "navigation-bar": {
+          "system": "x11",
+          "display": "inherit",
+          "mode": "overlay",
+          "title": "MSYS Navigation",
+          "identity": {
+            "app_id": "org.msys.shell.native.navigation-pill",
+            "x11_wm_class": "org.msys.shell.native.navigation-pill",
+            "x11_wm_instance": "msys-shell-lvgl"
+          },
+          "edge": "bottom"
+        },
+        "task-switcher": {
+          "system": "x11",
+          "display": "inherit",
+          "mode": "overlay",
+          "title": "MSYS Recents",
+          "identity": {
+            "app_id": "org.msys.shell.task-switcher",
+            "x11_wm_class": "org.msys.shell.task-switcher",
+            "x11_wm_instance": "msys-shell-lvgl"
+          }
+        }
+      },
+      "permissions": [
+        "display:x11",
+        "mipc.call:msys.core",
+        "mipc.call:role:window-manager",
+        "mipc.event:subscribe:msys.session.preferences.changed",
+        "mipc.event:subscribe:msys.timezone.changed",
+        "mipc.event:subscribe:msys.install.package_changed",
+        "mipc.event:subscribe:msys.lifecycle.transition",
+        "mipc.event:subscribe:msys.hal.changed",
+        "mipc.event:publish:msys.role.ready"
+      ],
+      "isolation": "baseline",
+      "provides": [
+        {
+          "role": "launcher",
+          "exclusive": true,
+          "priority": 89,
+          "x-msys-contract": {
+            "id": "org.msys.role.launcher.v1",
+            "version": "1.0.0"
+          }
+        },
+        {"role": "system-chrome", "exclusive": true, "priority": 89},
+        {
+          "role": "navigation-bar",
+          "exclusive": true,
+          "priority": 89,
+          "x-msys-contract": {
+            "id": "org.msys.role.navigation-bar.v1",
+            "version": "1.0.0"
+          }
+        },
+        {"role": "task-switcher", "exclusive": true, "priority": 89}
+      ],
+      "x-msys-ui-provider": {
+        "id": "lvgl",
+        "fallback_component": "org.msys.shell.native:desktop-shell",
+        "phase": "preview"
+      }
     }
   ]
 }

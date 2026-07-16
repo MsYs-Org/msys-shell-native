@@ -1,6 +1,7 @@
 CC ?= cc
 AR ?= ar
 SDK_DIR ?= ../msys-sdk
+UI_DIR ?= ../msys-ui-lvgl
 BUILD_DIR ?= build
 BIN_DIR ?= bin
 
@@ -13,6 +14,17 @@ SOURCES := src/main.c src/model.c src/catalog.c src/preferences.c src/image.c \
 	src/notification.c src/clock.c src/system_metrics.c src/launcher_layout.c
 OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SOURCES))
 TARGET := $(BIN_DIR)/msys-shell-native
+UI_LIBRARY := $(UI_DIR)/build/libmsys-ui-lvgl.a
+LVGL_TARGET := $(BIN_DIR)/msys-shell-lvgl
+LVGL_PACKAGE_TARGET := files/bin/msys-shell-lvgl
+LVGL_CPPFLAGS := -I$(UI_DIR)/include -I$(UI_DIR)/vendor/lvgl -I$(UI_DIR) \
+	-DLV_CONF_INCLUDE_SIMPLE
+LVGL_SOURCES := src/lvgl_main.c src/model.c src/catalog.c src/image.c \
+	src/system_metrics.c
+LVGL_OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/lvgl/%.o,$(LVGL_SOURCES))
+LVGL_UI_FILES := files/share/ui/shell/launcher.xml \
+	files/share/ui/shell/chrome.xml files/share/ui/shell/navigation.xml \
+	files/share/ui/shell/overview.xml
 TEST_TARGET := $(BUILD_DIR)/test-model
 CATALOG_TEST_TARGET := $(BUILD_DIR)/test-catalog
 PREFERENCES_TEST_TARGET := $(BUILD_DIR)/test-preferences
@@ -23,18 +35,45 @@ CLOCK_TEST_TARGET := $(BUILD_DIR)/test-clock
 SYSTEM_METRICS_TEST_TARGET := $(BUILD_DIR)/test-system-metrics
 LAUNCHER_LAYOUT_TEST_TARGET := $(BUILD_DIR)/test-launcher-layout
 
-.PHONY: all clean test strict sdk i18n integration-test
+.PHONY: all clean test strict sdk ui i18n integration-test lvgl lvgl-probe
 
-all: $(TARGET)
+all: $(TARGET) $(LVGL_PACKAGE_TARGET)
 
 sdk:
 	$(MAKE) -C $(SDK_DIR) build/libmsys-mipc.a
+
+ui:
+	$(MAKE) -C $(UI_DIR) build/libmsys-ui-lvgl.a
 
 i18n:
 	PYTHONPATH=$(SDK_DIR) python3 -m msys_sdk.i18n_c files/share/i18n/catalog.json generated/shell_catalog.h --symbol shell_catalog
 
 $(TARGET): $(OBJECTS) | $(BIN_DIR) sdk
 	$(CC) $(CFLAGS) $(OBJECTS) -o $@ $(LDLIBS)
+
+$(UI_LIBRARY):
+	$(MAKE) -C $(UI_DIR) build/libmsys-ui-lvgl.a
+
+$(BUILD_DIR)/lvgl/%.o: src/%.c $(UI_LIBRARY) | $(BUILD_DIR)
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(LVGL_CPPFLAGS) $(CFLAGS) \
+		-ffunction-sections -fdata-sections -c $< -o $@
+
+$(LVGL_TARGET): $(LVGL_OBJECTS) $(UI_LIBRARY) | $(BIN_DIR) sdk
+	$(CC) $(CFLAGS) -Wl,--gc-sections $(LVGL_OBJECTS) -o $@ \
+		$(SDK_DIR)/build/libmsys-mipc.a $(UI_LIBRARY) -lX11 -ldl -lm
+
+$(LVGL_PACKAGE_TARGET): $(LVGL_TARGET) $(LVGL_UI_FILES)
+	@mkdir -p $(@D) files/share/licenses/lvgl files/share/licenses/msys-ui-lvgl
+	cp $(LVGL_TARGET) $@
+	cp $(UI_DIR)/vendor/lvgl/LICENCE.txt $(UI_DIR)/vendor/lvgl/COPYRIGHTS.md \
+		files/share/licenses/lvgl/
+	cp $(UI_DIR)/LICENSE files/share/licenses/msys-ui-lvgl/
+
+lvgl: $(LVGL_PACKAGE_TARGET)
+
+lvgl-probe: $(LVGL_PACKAGE_TARGET)
+	tests/probe_lvgl_shell.sh
 
 $(BUILD_DIR)/main.o: src/main.c generated/shell_catalog.h \
 	include/msys_shell_native/model.h include/msys_shell_native/catalog.h \
@@ -132,4 +171,5 @@ $(BUILD_DIR) $(BIN_DIR):
 	mkdir -p $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(BIN_DIR)
+	rm -rf $(BUILD_DIR) $(BIN_DIR) $(LVGL_PACKAGE_TARGET) \
+		files/share/licenses/lvgl files/share/licenses/msys-ui-lvgl
