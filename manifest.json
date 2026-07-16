@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.shell.native",
     "name": "MSYS Native Shell",
-    "version": "0.6.0",
+    "version": "0.6.1",
     "kind": "system",
     "vendor": "MSYS",
     "summary": "Lean LVGL/XML shell with an Xlib compatibility fallback",
@@ -230,6 +230,7 @@
         "mipc.event:subscribe:msys.hal.changed",
         "mipc.event:subscribe:msys.role.notification-presenter",
         "mipc.event:subscribe:msys.notification.post",
+        "mipc.event:publish:msys.shell.preferences.changed",
         "mipc.event:publish:msys.role.ready"
       ],
       "isolation": "baseline",

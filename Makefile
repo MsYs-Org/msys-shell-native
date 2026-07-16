@@ -24,7 +24,8 @@ LVGL_PACKAGE_TARGET := files/bin/msys-shell-lvgl
 LVGL_CPPFLAGS := -I$(UI_DIR)/include -I$(UI_DIR)/vendor/lvgl -I$(UI_DIR) \
 	-DLV_CONF_INCLUDE_SIMPLE
 LVGL_SOURCES := src/lvgl_main.c src/model.c src/catalog.c src/image.c \
-	src/system_metrics.c src/notification.c
+	src/system_metrics.c src/notification.c src/preferences.c \
+	src/launcher_layout.c
 LVGL_OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/lvgl/%.o,$(LVGL_SOURCES))
 LVGL_UI_FILES := files/share/ui/shell/launcher.xml \
 	files/share/ui/shell/chrome.xml files/share/ui/shell/navigation.xml \

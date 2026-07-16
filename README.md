@@ -1,6 +1,12 @@
 # MSYS Native Shell
 
-Current source version: `0.6.0`.
+Current source version: `0.6.1`.
+
+Version 0.6.1 connects the LVGL preview Launcher to the same persisted
+`msys.shell-preferences.v1` and `launcher-layout.v1` contracts as the Xlib
+provider. It adds preference-sized multi-page grids, package icons, PPM
+wallpaper/color fallback, long-press editing, drag reorder/group/cross-page
+move, and ordinary/large-folder persistence while retaining Xlib as default.
 
 Version 0.6.0 adds the second LVGL parity slice without selecting it by
 default. Notification history, notification-presenter Toasts, and Quick

@@ -24,6 +24,9 @@ typedef struct msys_native_launcher_item {
     unsigned int page;
     char id[MSYS_NATIVE_COMPONENT_CAPACITY];
     char name[MSYS_NATIVE_NAME_CAPACITY];
+    /* Presentation is persisted without changing the folder's semantic kind.
+     * Xlib providers which do not render large folders can safely ignore it. */
+    int large;
     size_t member_count;
     char members[MSYS_NATIVE_LAUNCHER_MAX_FOLDER_MEMBERS]
         [MSYS_NATIVE_COMPONENT_CAPACITY];

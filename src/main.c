@@ -4081,6 +4081,7 @@ static int initialize_ipc(native_shell *shell)
 
 static void apply_preferences_visual(native_shell *shell)
 {
+    shell->buttons_mode = strcmp(shell->preferences.navigation_mode, "buttons") == 0;
     shell->background = color(
         shell,
         shell->preferences.wallpaper_color,
@@ -8313,7 +8314,9 @@ int main(int argc, char **argv)
         }
     }
     shell.next_request_id = 1000u;
-    shell.buttons_mode = mode != NULL && strcmp(mode, "buttons") == 0;
+    shell.buttons_mode = mode != NULL
+        ? strcmp(mode, "buttons") == 0
+        : strcmp(shell.preferences.navigation_mode, "buttons") == 0;
     shell.chrome_clock_debug = getenv("MSYS_NATIVE_CLOCK_DEBUG") != NULL;
     if (argc > 1 && strcmp(argv[1], "--version") == 0) {
         puts(APP_VERSION);

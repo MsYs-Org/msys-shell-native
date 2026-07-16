@@ -22,6 +22,12 @@ typedef struct msys_native_preferences {
     int grid_rows;
     int show_labels;
     int acrylic;
+    char navigation_mode[16];
+    int icon_spacing;
+    int folders_enabled;
+    int large_folders_enabled;
+    int animations_enabled;
+    int reduce_motion;
     char sort[16];
 } msys_native_preferences;
 

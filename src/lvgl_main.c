@@ -4,6 +4,8 @@
 #include "msys_shell_native/image.h"
 #include "msys_shell_native/model.h"
 #include "msys_shell_native/notification.h"
+#include "msys_shell_native/preferences.h"
+#include "msys_shell_native/launcher_layout.h"
 #include "msys_shell_native/system_metrics.h"
 
 #include "msys/mipc.h"
@@ -24,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.0"
+#define APP_VERSION "0.6.1"
 #define SURFACE_COUNT 7u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -32,11 +34,14 @@
 #define WORK_HEIGHT (ROOT_HEIGHT - BAR_HEIGHT * 2)
 #define DRAW_ROWS 48
 #define MAX_PENDING 16u
-#define MAX_BINDINGS (MSYS_NATIVE_MAX_APPS + MSYS_NATIVE_MAX_TASKS * 2u)
+#define LAUNCHER_BINDING_CAPACITY 96u
+#define MAX_BINDINGS (LAUNCHER_BINDING_CAPACITY + MSYS_NATIVE_MAX_TASKS * 2u)
 #define XML_WATCH_INTERVAL_MS 250u
 #define METRICS_INTERVAL_MS 1000u
 #define WIFI_REFRESH_INTERVAL_MS 10000u
 #define TOAST_VISIBLE_MS 1800u
+#define LAUNCHER_LONG_PRESS_MS 520u
+#define LAUNCHER_EDGE_PX 24
 
 enum shell_surface_id {
     SURFACE_LAUNCHER = 0,
@@ -59,13 +64,26 @@ enum pending_kind {
     PENDING_NAVIGATION,
     PENDING_WIFI_INVENTORY,
     PENDING_WIFI_STATE,
-    PENDING_SETTINGS
+    PENDING_SETTINGS,
+    PENDING_DETAILS,
+    PENDING_UNINSTALL,
+    PENDING_QUICK_ACTION
 };
 
 enum binding_action {
     BIND_START_APP = 1,
     BIND_FOCUS_TASK,
-    BIND_CLOSE_TASK
+    BIND_CLOSE_TASK,
+    BIND_LAUNCHER_ITEM,
+    BIND_FOLDER_MEMBER,
+    BIND_LAUNCHER_PREVIOUS,
+    BIND_LAUNCHER_NEXT,
+    BIND_LAUNCHER_EDIT_DONE,
+    BIND_LAUNCHER_DETAILS,
+    BIND_LAUNCHER_UNINSTALL,
+    BIND_LAUNCHER_TOGGLE_FOLDER_SIZE,
+    BIND_LAUNCHER_QUICK_ACTION,
+    BIND_FOLDER_CLOSE
 };
 
 typedef struct shell_state shell_state;
@@ -89,11 +107,13 @@ typedef struct {
     shell_state *shell;
     enum binding_action action;
     size_t index;
+    size_t secondary;
 } ui_binding;
 
 typedef struct {
     lv_image_dsc_t descriptor;
     uint8_t *pixels;
+    char path[MSYS_NATIVE_PATH_CAPACITY];
 } ui_bitmap;
 
 struct shell_state {
@@ -107,10 +127,12 @@ struct shell_state {
     char *packet;
     msys_native_app apps[MSYS_NATIVE_MAX_APPS];
     size_t app_count;
+    int apps_loaded;
     msys_native_task tasks[MSYS_NATIVE_MAX_TASKS];
     size_t task_count;
     ui_bitmap app_icons[MSYS_NATIVE_MAX_APPS];
     ui_bitmap task_previews[MSYS_NATIVE_MAX_TASKS];
+    ui_bitmap wallpaper;
     ui_binding bindings[MAX_BINDINGS];
     size_t binding_count;
     msys_native_system_metrics metrics;
@@ -127,6 +149,8 @@ struct shell_state {
     int controls_visible;
     int toast_visible;
     int buttons_mode;
+    int legacy_navigation_override;
+    int allow_acrylic;
     int wifi_known;
     int wifi_available;
     int wifi_connected;
@@ -136,6 +160,23 @@ struct shell_state {
     char wifi_device[MSYS_NATIVE_COMPONENT_CAPACITY];
     char ui_dir[PATH_MAX];
     char clock_text[16];
+    msys_native_preferences preferences;
+    char preferences_path[MSYS_NATIVE_PREFERENCES_PATH_CAPACITY];
+    msys_native_launcher_layout launcher_layout;
+    unsigned int launcher_page;
+    size_t launcher_page_capacity;
+    int launcher_columns;
+    int launcher_rows;
+    int launcher_editing;
+    int launcher_folder;
+    int launcher_selected;
+    int launcher_drag_source;
+    int launcher_drag_target;
+    int launcher_dragging;
+    lv_point_t launcher_drag_origin;
+    lv_obj_t *launcher_drag_object;
+    lv_obj_t *launcher_tiles[MSYS_NATIVE_LAUNCHER_MAX_ITEMS];
+    msys_ui_output_t output;
 };
 
 static volatile sig_atomic_t stopping;
@@ -219,6 +260,10 @@ static int bitmap_load(ui_bitmap *bitmap, const char *path, int width, int heigh
     if(bitmap == NULL || path == NULL || path[0] == '\0' || width <= 0 ||
        height <= 0)
         return 0;
+    if(bitmap->pixels != NULL && bitmap->descriptor.header.w == (uint16_t)width &&
+       bitmap->descriptor.header.h == (uint16_t)height &&
+       strcmp(bitmap->path, path) == 0)
+        return 1;
     bitmap_dispose(bitmap);
     if(msys_native_ppm_load(path, 8u * 1024u * 1024u, &source) == 0) return 0;
     bytes = (size_t)width * (size_t)height * 2u;
@@ -251,6 +296,7 @@ static int bitmap_load(ui_bitmap *bitmap, const char *path, int width, int heigh
     bitmap->descriptor.header.stride = (uint16_t)(width * 2);
     bitmap->descriptor.data_size = (uint32_t)bytes;
     bitmap->descriptor.data = bitmap->pixels;
+    (void)snprintf(bitmap->path, sizeof(bitmap->path), "%s", path);
     return 1;
 }
 
@@ -406,6 +452,7 @@ static ui_binding *new_binding(shell_state *shell, enum binding_action action,
     binding->shell = shell;
     binding->action = action;
     binding->index = index;
+    binding->secondary = 0u;
     return binding;
 }
 
@@ -422,6 +469,7 @@ static void render_overview(shell_state *shell);
 static void render_notifications(shell_state *shell);
 static void request_wifi_inventory(shell_state *shell);
 static void send_navigation(shell_state *shell, const char *action);
+static int event_point(lv_event_t *event, lv_point_t *point);
 
 static void start_app(shell_state *shell, size_t index)
 {
@@ -483,6 +531,214 @@ static void close_task(shell_state *shell, size_t index)
     (void)send_call(shell, PENDING_CLOSE, index, target, method, payload, 0);
 }
 
+static int launcher_app_index(const shell_state *shell, const char *component,
+                              size_t *result)
+{
+    size_t index;
+    for(index = 0u; index < shell->app_count; index++) {
+        if(strcmp(shell->apps[index].component, component) == 0) {
+            if(result != NULL) *result = index;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void launcher_open_software_center(shell_state *shell, size_t app_index,
+                                          const char *action)
+{
+    char component[MSYS_NATIVE_COMPONENT_CAPACITY * 2u];
+    char payload[768];
+    enum pending_kind kind = strcmp(action, "uninstall") == 0
+        ? PENDING_UNINSTALL : PENDING_DETAILS;
+    if(app_index >= shell->app_count ||
+       msys_native_json_escape(shell->apps[app_index].component, component,
+                               sizeof(component)) == 0)
+        return;
+    (void)snprintf(payload, sizeof(payload),
+        "{\"component\":\"org.msys.settings:software-center\","
+        "\"activation\":{\"action\":\"software-center\",\"name\":\"%s\","
+        "\"component\":\"%s\"}}", action, component);
+    if(send_call(shell, kind, app_index, "msys.core", "start", payload, 1) == 0u)
+        show_toast(shell, localized(shell, "软件中心不可用", "Software Center unavailable"));
+}
+
+static void launcher_quick_action(shell_state *shell, size_t app_index,
+                                  size_t action_index)
+{
+    char payload[768];
+    if(app_index >= shell->app_count ||
+       action_index >= shell->apps[app_index].quick_action_count ||
+       msys_native_quick_action_payload(
+           &shell->apps[app_index].quick_actions[action_index],
+           shell->apps[app_index].component, payload, sizeof(payload)) == 0)
+        return;
+    (void)send_call(shell, PENDING_QUICK_ACTION, app_index, "msys.core",
+                    "activate", payload, 1);
+}
+
+static void launcher_commit(shell_state *shell)
+{
+    if(msys_native_launcher_layout_commit(&shell->launcher_layout) == 0)
+        show_toast(shell, localized(shell, "无法保存桌面布局",
+                                    "Unable to save Home layout"));
+}
+
+static void launcher_select_page(shell_state *shell, int direction)
+{
+    unsigned int pages = msys_native_launcher_page_count(&shell->launcher_layout);
+    if(shell->launcher_folder >= 0) {
+        shell->launcher_folder = -1;
+        render_launcher(shell);
+        return;
+    }
+    if(direction < 0 && shell->launcher_page > 0u) shell->launcher_page--;
+    else if(direction > 0 && shell->launcher_page + 1u < pages)
+        shell->launcher_page++;
+    render_launcher(shell);
+}
+
+static void launcher_finish_edit(shell_state *shell)
+{
+    shell->launcher_editing = 0;
+    shell->launcher_selected = -1;
+    shell->launcher_drag_source = -1;
+    shell->launcher_drag_target = -1;
+    shell->launcher_dragging = 0;
+    shell->launcher_drag_object = NULL;
+    render_launcher(shell);
+}
+
+static void launcher_item_event_cb(lv_event_t *event)
+{
+    ui_binding *binding = lv_event_get_user_data(event);
+    shell_state *shell;
+    lv_event_code_t code = lv_event_get_code(event);
+    lv_obj_t *object = lv_event_get_current_target(event);
+    lv_point_t point;
+    if(binding == NULL || binding->shell == NULL || object == NULL) return;
+    shell = binding->shell;
+    if(binding->index >= shell->launcher_layout.count) return;
+    if(code == LV_EVENT_PRESSED && event_point(event, &point) != 0) {
+        shell->launcher_drag_source = (int)binding->index;
+        shell->launcher_drag_target = -1;
+        shell->launcher_drag_origin = point;
+        shell->launcher_drag_object = object;
+        shell->launcher_dragging = 0;
+        if(shell->preferences.animations_enabled != 0 &&
+           shell->preferences.reduce_motion == 0)
+            msys_ui_animate_press(object, shell->policy, true);
+    }
+    else if(code == LV_EVENT_LONG_PRESSED) {
+        shell->launcher_editing = 1;
+        shell->launcher_selected = (int)binding->index;
+        lv_obj_set_style_border_width(object, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_color(object, lv_color_hex(0x3f66e8), LV_PART_MAIN);
+        set_label_if_changed(&shell->views[SURFACE_LAUNCHER], "launcher_status",
+            localized(shell, "编辑模式：拖动排序或归入文件夹",
+                      "Edit mode: drag to reorder or group"));
+    }
+    else if(code == LV_EVENT_PRESSING && shell->launcher_editing != 0 &&
+            shell->launcher_drag_source == (int)binding->index &&
+            event_point(event, &point) != 0) {
+        int dx = point.x - shell->launcher_drag_origin.x;
+        int dy = point.y - shell->launcher_drag_origin.y;
+        size_t index;
+        if(abs(dx) > 5 || abs(dy) > 5) shell->launcher_dragging = 1;
+        if(shell->launcher_dragging != 0) {
+            lv_obj_set_style_translate_x(object, (int16_t)dx, LV_PART_MAIN);
+            lv_obj_set_style_translate_y(object, (int16_t)dy, LV_PART_MAIN);
+            shell->launcher_drag_target = -1;
+            for(index = 0u; index < shell->launcher_layout.count; index++) {
+                lv_area_t area;
+                if(index == binding->index || shell->launcher_tiles[index] == NULL)
+                    continue;
+                lv_obj_get_coords(shell->launcher_tiles[index], &area);
+                if(point.x >= area.x1 && point.x <= area.x2 &&
+                   point.y >= area.y1 && point.y <= area.y2) {
+                    shell->launcher_drag_target = (int)index;
+                    break;
+                }
+            }
+        }
+    }
+    else if(code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        int source = shell->launcher_drag_source;
+        int target = shell->launcher_drag_target;
+        int changed = 0;
+        if(shell->preferences.animations_enabled != 0 &&
+           shell->preferences.reduce_motion == 0)
+            msys_ui_animate_press(object, shell->policy, false);
+        lv_obj_set_style_translate_x(object, 0, LV_PART_MAIN);
+        lv_obj_set_style_translate_y(object, 0, LV_PART_MAIN);
+        if(code == LV_EVENT_RELEASED && shell->launcher_editing != 0 &&
+           source >= 0 && shell->launcher_dragging != 0) {
+            if(target >= 0) {
+                msys_native_launcher_item *source_item =
+                    &shell->launcher_layout.items[source];
+                msys_native_launcher_item *target_item =
+                    &shell->launcher_layout.items[target];
+                size_t result = 0u;
+                if(shell->preferences.folders_enabled != 0 &&
+                   source_item->kind == MSYS_NATIVE_LAUNCHER_APP &&
+                   target_item->kind == MSYS_NATIVE_LAUNCHER_FOLDER)
+                    changed = msys_native_launcher_add_to_folder(
+                        &shell->launcher_layout, (size_t)source, (size_t)target,
+                        shell->launcher_page_capacity, &result);
+                else if(shell->preferences.folders_enabled != 0 &&
+                        source_item->kind == MSYS_NATIVE_LAUNCHER_APP &&
+                        target_item->kind == MSYS_NATIVE_LAUNCHER_APP)
+                    changed = msys_native_launcher_make_folder(
+                        &shell->launcher_layout, (size_t)source, (size_t)target,
+                        localized(shell, "新建文件夹", "New folder"),
+                        shell->launcher_page_capacity, &result);
+                else
+                    changed = msys_native_launcher_swap(
+                        &shell->launcher_layout, (size_t)source, (size_t)target);
+            }
+            else if(event_point(event, &point) != 0 &&
+                    (point.x <= LAUNCHER_EDGE_PX ||
+                     point.x >= ROOT_WIDTH - LAUNCHER_EDGE_PX)) {
+                unsigned int pages = msys_native_launcher_page_count(
+                    &shell->launcher_layout);
+                unsigned int target_page = shell->launcher_page;
+                size_t result = 0u;
+                if(point.x <= LAUNCHER_EDGE_PX && target_page > 0u)
+                    target_page--;
+                else if(point.x >= ROOT_WIDTH - LAUNCHER_EDGE_PX)
+                    target_page++;
+                if(target_page <= pages && target_page != shell->launcher_page) {
+                    changed = msys_native_launcher_move(
+                        &shell->launcher_layout, (size_t)source, target_page,
+                        msys_native_launcher_page_items(&shell->launcher_layout,
+                            target_page, NULL, 0u), shell->launcher_page_capacity,
+                        &result);
+                    if(changed != 0) shell->launcher_page = target_page;
+                }
+            }
+            if(changed != 0) launcher_commit(shell);
+            render_launcher(shell);
+        }
+        shell->launcher_drag_source = -1;
+        shell->launcher_drag_target = -1;
+        shell->launcher_dragging = 0;
+        shell->launcher_drag_object = NULL;
+    }
+    else if(code == LV_EVENT_CLICKED && shell->launcher_editing == 0) {
+        const msys_native_launcher_item *item =
+            &shell->launcher_layout.items[binding->index];
+        if(item->kind == MSYS_NATIVE_LAUNCHER_FOLDER) {
+            shell->launcher_folder = (int)binding->index;
+            render_launcher(shell);
+        }
+        else {
+            size_t app_index;
+            if(launcher_app_index(shell, item->id, &app_index))
+                start_app(shell, app_index);
+        }
+    }
+}
+
 static void item_event_cb(lv_event_t *event)
 {
     ui_binding *binding = lv_event_get_user_data(event);
@@ -500,6 +756,29 @@ static void item_event_cb(lv_event_t *event)
             focus_task(binding->shell, binding->index);
         else if(binding->action == BIND_CLOSE_TASK)
             close_task(binding->shell, binding->index);
+        else if(binding->action == BIND_FOLDER_MEMBER)
+            start_app(binding->shell, binding->index);
+        else if(binding->action == BIND_LAUNCHER_PREVIOUS)
+            launcher_select_page(binding->shell, -1);
+        else if(binding->action == BIND_LAUNCHER_NEXT)
+            launcher_select_page(binding->shell, 1);
+        else if(binding->action == BIND_LAUNCHER_EDIT_DONE)
+            launcher_finish_edit(binding->shell);
+        else if(binding->action == BIND_LAUNCHER_DETAILS)
+            launcher_open_software_center(binding->shell, binding->index, "details");
+        else if(binding->action == BIND_LAUNCHER_UNINSTALL)
+            launcher_open_software_center(binding->shell, binding->index, "uninstall");
+        else if(binding->action == BIND_LAUNCHER_QUICK_ACTION)
+            launcher_quick_action(binding->shell, binding->index,
+                                  binding->secondary);
+        else if(binding->action == BIND_LAUNCHER_TOGGLE_FOLDER_SIZE &&
+                binding->index < binding->shell->launcher_layout.count) {
+            msys_native_launcher_item *folder =
+                &binding->shell->launcher_layout.items[binding->index];
+            folder->large = folder->large == 0;
+            launcher_commit(binding->shell);
+            render_launcher(binding->shell);
+        }
     }
 }
 
@@ -570,76 +849,221 @@ static lv_obj_t *make_image(lv_obj_t *parent, ui_bitmap *bitmap, int width,
     return image;
 }
 
+static uint32_t launcher_color(const char *text, uint32_t fallback)
+{
+    char *end = NULL;
+    unsigned long value;
+    if(text == NULL || text[0] != '#' || strlen(text) != 7u) return fallback;
+    value = strtoul(text + 1, &end, 16);
+    return end != NULL && *end == '\0' ? (uint32_t)value : fallback;
+}
+
+static lv_obj_t *make_fallback_icon(shell_view *view, lv_obj_t *parent,
+                                    const char *name, int size)
+{
+    lv_obj_t *icon = lv_obj_create(parent);
+    lv_obj_t *symbol = lv_label_create(icon);
+    char initial[5] = "M";
+    size_t bytes = name != NULL ? strlen(name) : 0u;
+    lv_obj_set_size(icon, size, size);
+    lv_obj_set_style_radius(icon, (int16_t)(size / 4), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(icon, lv_color_hex(0x3f66e8), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(icon, 0, LV_PART_MAIN);
+    if(bytes > 0u) {
+        size_t take = ((unsigned char)name[0] & 0x80u) != 0u
+            ? (bytes >= 3u ? 3u : bytes) : 1u;
+        memcpy(initial, name, take);
+        initial[take] = '\0';
+    }
+    lv_label_set_text(symbol, initial);
+    lv_obj_set_style_text_color(symbol, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_set_style_text_font(symbol, msys_ui_theme_font(view->theme, 20),
+                               LV_PART_MAIN);
+    lv_obj_center(symbol);
+    return icon;
+}
+
 static void render_launcher(shell_state *shell)
 {
     shell_view *view = &shell->views[SURFACE_LAUNCHER];
     lv_obj_t *grid = view_object(view, "app_grid");
-    size_t index;
+    lv_obj_t *root = msys_ui_document_root(view->document);
+    size_t indices[MSYS_NATIVE_LAUNCHER_MAX_ITEMS];
+    size_t count;
+    size_t slot;
+    unsigned int pages;
+    int width;
+    int height;
+    int columns;
+    int rows;
+    int spacing;
+    int icon_size;
+    int tile_width;
+    int tile_height;
+    char page_text[24];
     shell->binding_count = 0u;
-    bitmaps_dispose(shell->app_icons, MSYS_NATIVE_MAX_APPS);
     if(grid == NULL) return;
+    width = lv_obj_get_content_width(grid);
+    height = lv_obj_get_content_height(grid);
+    if(width <= 0) width = ROOT_WIDTH - 24;
+    if(height <= 0) height = WORK_HEIGHT - 70;
+    spacing = shell->preferences.icon_spacing;
+    columns = shell->preferences.grid_columns > 0
+        ? shell->preferences.grid_columns : (width >= 600 ? 6 : 3);
+    icon_size = shell->preferences.icon_size;
+    tile_height = icon_size + (shell->preferences.show_labels != 0 ? 34 : 16);
+    rows = shell->preferences.grid_rows > 0 ? shell->preferences.grid_rows
+        : (height + spacing) / (tile_height + spacing);
+    if(rows < 1) rows = 1;
+    if(rows > 6) rows = 6;
+    shell->launcher_columns = columns;
+    shell->launcher_rows = rows;
+    shell->launcher_page_capacity = (size_t)columns * (size_t)rows;
+    lv_obj_set_style_pad_row(grid, (int16_t)spacing, LV_PART_MAIN);
+    lv_obj_set_style_pad_column(grid, (int16_t)spacing, LV_PART_MAIN);
+    if(root != NULL) {
+        lv_obj_set_style_bg_image_src(root, NULL, LV_PART_MAIN);
+        bitmap_dispose(&shell->wallpaper);
+        lv_obj_set_style_bg_color(root, lv_color_hex(launcher_color(
+            shell->preferences.wallpaper_color, 0xf4f6fa)), LV_PART_MAIN);
+        if(shell->preferences.wallpaper_path[0] == '/' &&
+           bitmap_load(&shell->wallpaper, shell->preferences.wallpaper_path,
+                       ROOT_WIDTH, WORK_HEIGHT) != 0)
+            lv_obj_set_style_bg_image_src(root, &shell->wallpaper.descriptor,
+                                          LV_PART_MAIN);
+    }
+    if(shell->apps_loaded != 0 &&
+       msys_native_launcher_layout_reconcile(&shell->launcher_layout,
+            shell->apps, shell->app_count, shell->launcher_page_capacity) != 0)
+        launcher_commit(shell);
+    pages = msys_native_launcher_page_count(&shell->launcher_layout);
+    if(shell->launcher_page >= pages) shell->launcher_page = pages - 1u;
+    memset(shell->launcher_tiles, 0, sizeof(shell->launcher_tiles));
     lv_obj_clean(grid);
-    for(index = 0u; index < shell->app_count; index++) {
-        ui_binding *binding = new_binding(shell, BIND_START_APP, index);
+    count = msys_native_launcher_page_items(&shell->launcher_layout,
+        shell->launcher_page, indices, MSYS_NATIVE_LAUNCHER_MAX_ITEMS);
+    tile_width = (width - (columns - 1) * spacing) / columns;
+    if(tile_width < 60) tile_width = 60;
+    if(icon_size > tile_width - 10) icon_size = tile_width - 10;
+    tile_height = icon_size + (shell->preferences.show_labels != 0 ? 32 : 12);
+    if(shell->launcher_folder >= 0 &&
+       (size_t)shell->launcher_folder < shell->launcher_layout.count &&
+       shell->launcher_layout.items[shell->launcher_folder].kind ==
+           MSYS_NATIVE_LAUNCHER_FOLDER) {
+        const msys_native_launcher_item *folder =
+            &shell->launcher_layout.items[shell->launcher_folder];
+        set_label_if_changed(view, "launcher_title", folder->name);
+        for(slot = 0u; slot < folder->member_count; slot++) {
+            size_t app_index;
+            ui_binding *binding;
+            lv_obj_t *tile;
+            lv_obj_t *icon;
+            lv_obj_t *name;
+            if(!launcher_app_index(shell, folder->members[slot], &app_index)) continue;
+            binding = new_binding(shell, BIND_FOLDER_MEMBER, app_index);
+            tile = lv_button_create(grid);
+            lv_obj_set_size(tile, tile_width, tile_height);
+            lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                                  LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_radius(tile, 18, LV_PART_MAIN);
+            lv_obj_set_style_bg_color(tile, lv_color_hex(0xffffff), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_set_style_border_width(tile, 1, LV_PART_MAIN);
+            lv_obj_set_style_border_color(tile, lv_color_hex(0xdde4ef), LV_PART_MAIN);
+            lv_obj_set_style_shadow_width(tile, 0, LV_PART_MAIN);
+            lv_obj_set_style_pad_all(tile, 6, LV_PART_MAIN);
+            if(bitmap_load(&shell->app_icons[app_index],
+                           shell->apps[app_index].icon_path,
+                           icon_size, icon_size) != 0)
+                icon = make_image(tile, &shell->app_icons[app_index],
+                                  icon_size, icon_size);
+            else
+                icon = make_fallback_icon(view, tile,
+                                          shell->apps[app_index].name, icon_size);
+            (void)icon;
+            if(shell->preferences.show_labels != 0) {
+                name = lv_label_create(tile);
+                lv_obj_set_width(name, tile_width - 8);
+                lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+                lv_label_set_text(name, shell->apps[app_index].name);
+                lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+            }
+            if(binding != NULL)
+                lv_obj_add_event_cb(tile, item_event_cb, LV_EVENT_ALL, binding);
+        }
+        (void)snprintf(page_text, sizeof(page_text), "%zu", folder->member_count);
+        set_label_if_changed(view, "page_label", page_text);
+        set_label_if_changed(view, "launcher_status",
+            localized(shell, "点击左箭头关闭文件夹", "Use the left arrow to close"));
+        return;
+    }
+    set_label_if_changed(view, "launcher_title", localized(shell, "应用", "Apps"));
+    for(slot = 0u; slot < count; slot++) {
+        size_t item_index = indices[slot];
+        const msys_native_launcher_item *item =
+            &shell->launcher_layout.items[item_index];
+        size_t app_index = shell->app_count;
+        ui_binding *binding = new_binding(shell, BIND_LAUNCHER_ITEM, item_index);
         lv_obj_t *tile = lv_button_create(grid);
         lv_obj_t *icon;
         lv_obj_t *name;
-        lv_obj_set_size(tile, 88, 104);
+        shell->launcher_tiles[item_index] = tile;
+        if(item->kind == MSYS_NATIVE_LAUNCHER_APP)
+            (void)launcher_app_index(shell, item->id, &app_index);
+        lv_obj_set_size(tile,
+            item->kind == MSYS_NATIVE_LAUNCHER_FOLDER && item->large != 0 &&
+            shell->preferences.large_folders_enabled != 0
+                ? tile_width * 2 + spacing : tile_width,
+            tile_height);
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_radius(tile, 18, LV_PART_MAIN);
         lv_obj_set_style_bg_color(tile, lv_color_hex(0xffffff), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(tile,
+            shell->preferences.acrylic != 0 && shell->allow_acrylic != 0
+                ? (lv_opa_t)220 : LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_border_width(tile, 1, LV_PART_MAIN);
         lv_obj_set_style_border_color(tile, lv_color_hex(0xdde4ef), LV_PART_MAIN);
         lv_obj_set_style_shadow_width(tile, 0, LV_PART_MAIN);
         lv_obj_set_style_pad_all(tile, 6, LV_PART_MAIN);
-        if(bitmap_load(&shell->app_icons[index], shell->apps[index].icon_path,
-                       54, 54) != 0)
-            icon = make_image(tile, &shell->app_icons[index], 54, 54);
-        else {
-            icon = lv_obj_create(tile);
-            lv_obj_set_size(icon, 54, 54);
-            lv_obj_set_style_radius(icon, 16, LV_PART_MAIN);
-            lv_obj_set_style_bg_color(icon, lv_color_hex(0x3f66e8), LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, LV_PART_MAIN);
-            lv_obj_set_style_border_width(icon, 0, LV_PART_MAIN);
-            {
-                lv_obj_t *symbol = lv_label_create(icon);
-                char initial[5] = "M";
-                size_t bytes = strlen(shell->apps[index].name);
-                if(bytes > 0u) {
-                    size_t take = ((unsigned char)shell->apps[index].name[0] & 0x80u) != 0u
-                                      ? (bytes >= 3u ? 3u : bytes)
-                                      : 1u;
-                    memcpy(initial, shell->apps[index].name, take);
-                    initial[take] = '\0';
-                }
-                lv_label_set_text(symbol, initial);
-                lv_obj_set_style_text_color(symbol, lv_color_hex(0xffffff),
-                                             LV_PART_MAIN);
-                lv_obj_set_style_text_font(symbol,
-                    msys_ui_theme_font(view->theme, 20), LV_PART_MAIN);
-                lv_obj_center(symbol);
-            }
-        }
+        if(item->kind == MSYS_NATIVE_LAUNCHER_APP && app_index < shell->app_count &&
+           bitmap_load(&shell->app_icons[app_index],
+                       shell->apps[app_index].icon_path, icon_size, icon_size) != 0)
+            icon = make_image(tile, &shell->app_icons[app_index], icon_size, icon_size);
+        else
+            icon = make_fallback_icon(view, tile,
+                item->kind == MSYS_NATIVE_LAUNCHER_FOLDER ? item->name :
+                (app_index < shell->app_count ? shell->apps[app_index].name : "M"),
+                icon_size);
         (void)icon;
-        name = lv_label_create(tile);
-        lv_obj_set_width(name, 76);
-        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-        lv_label_set_text(name, shell->apps[index].name);
-        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-        lv_obj_set_style_text_color(name, lv_color_hex(0x253047), LV_PART_MAIN);
-        lv_obj_set_style_text_font(name, msys_ui_theme_font(view->theme, 14),
-                                   LV_PART_MAIN);
+        if(shell->preferences.show_labels != 0) {
+            const char *label = item->kind == MSYS_NATIVE_LAUNCHER_FOLDER
+                ? item->name : (app_index < shell->app_count
+                    ? shell->apps[app_index].name : item->id);
+            name = lv_label_create(tile);
+            lv_obj_set_width(name, tile_width - 8);
+            lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+            lv_label_set_text(name, label);
+            lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+            lv_obj_set_style_text_color(name, lv_color_hex(0x253047), LV_PART_MAIN);
+            lv_obj_set_style_text_font(name, msys_ui_theme_font(view->theme, 14),
+                                       LV_PART_MAIN);
+        }
         if(binding != NULL)
-            lv_obj_add_event_cb(tile, item_event_cb, LV_EVENT_ALL, binding);
+            lv_obj_add_event_cb(tile, launcher_item_event_cb, LV_EVENT_ALL, binding);
     }
-    set_label(view, "launcher_status",
-              shell->app_count == 0u
-                  ? localized(shell, "没有可启动的应用", "No launchable apps")
-                  : "");
+    (void)snprintf(page_text, sizeof(page_text), "%u / %u",
+                   shell->launcher_page + 1u, pages);
+    set_label_if_changed(view, "page_label", page_text);
+    set_label_if_changed(view, "launcher_status",
+        shell->app_count == 0u
+            ? localized(shell, "没有可启动的应用", "No launchable apps")
+            : (shell->launcher_editing != 0
+                ? localized(shell, "编辑模式：拖动排序或归入文件夹",
+                            "Edit mode: drag to reorder or group") : ""));
 }
 
 static void render_metrics(shell_state *shell)
@@ -660,7 +1084,7 @@ static void render_overview(shell_state *shell)
     bitmaps_dispose(shell->task_previews, MSYS_NATIVE_MAX_TASKS);
     if(grid == NULL) return;
     lv_obj_clean(grid);
-    shell->binding_count = shell->app_count;
+    shell->binding_count = LAUNCHER_BINDING_CAPACITY;
     for(index = 0u; index < shell->task_count; index++) {
         ui_binding *focus = new_binding(shell, BIND_FOCUS_TASK, index);
         ui_binding *close = new_binding(shell, BIND_CLOSE_TASK, index);
@@ -1091,6 +1515,10 @@ static void xml_action_cb(lv_event_t *event)
         start_settings_panel(active_shell, "bluetooth");
     else if(strcmp(action, "control-settings") == 0)
         start_settings_panel(active_shell, "system");
+    else if(strcmp(action, "launcher-previous") == 0)
+        launcher_select_page(active_shell, -1);
+    else if(strcmp(action, "launcher-next") == 0)
+        launcher_select_page(active_shell, 1);
 }
 
 static int bind_document(lv_xml_component_scope_t *scope, void *user_data)
@@ -1413,6 +1841,7 @@ static void handle_reply(shell_state *shell, const char *packet,
     if(call.kind == PENDING_APPS) {
         if(msys_native_parse_apps(payload, shell->apps, MSYS_NATIVE_MAX_APPS,
                                   &shell->app_count) != 0) {
+            shell->apps_loaded = 1;
             render_launcher(shell);
             if(shell->overview_visible != 0) render_overview(shell);
         }
@@ -1533,6 +1962,21 @@ static void handle_notification_call(shell_state *shell, uint64_t id,
     (void)msys_mipc_send_return_json(&shell->ipc, id, small);
 }
 
+static void apply_launcher_preferences(shell_state *shell)
+{
+    lv_obj_t *buttons;
+    lv_obj_t *pill_area;
+    shell->legacy_navigation_override = 0;
+    shell->buttons_mode = strcmp(shell->preferences.navigation_mode, "buttons") == 0;
+    buttons = view_object(&shell->views[SURFACE_NAVIGATION], "button_navigation");
+    pill_area = view_object(&shell->views[SURFACE_NAVIGATION], "pill_navigation");
+    if(buttons != NULL)
+        lv_obj_set_flag(buttons, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode == 0);
+    if(pill_area != NULL)
+        lv_obj_set_flag(pill_area, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode != 0);
+    render_launcher(shell);
+}
+
 static void handle_call(shell_state *shell, const char *packet)
 {
     uint64_t id;
@@ -1551,6 +1995,59 @@ static void handle_call(shell_state *shell, const char *packet)
         free(payload);
         return;
     }
+    if(strcmp(method, "get_preferences") == 0) {
+        char response[MSYS_NATIVE_PREFERENCES_JSON_CAPACITY];
+        if(payload == NULL || msys_native_preferences_empty_request(payload) == 0 ||
+           msys_native_preferences_state_json(&shell->preferences, response,
+                                               sizeof(response)) == 0)
+            (void)msys_mipc_send_error(&shell->ipc, id, "BAD_PREFERENCES",
+                                       "invalid preference request");
+        else
+            (void)msys_mipc_send_return_json(&shell->ipc, id, response);
+        free(payload);
+        return;
+    }
+    if(strcmp(method, "set_preferences") == 0 ||
+       strcmp(method, "reset_preferences") == 0) {
+        msys_native_preferences candidate;
+        char response[MSYS_NATIVE_PREFERENCES_JSON_CAPACITY];
+        char changed[MSYS_NATIVE_PREFERENCES_JSON_CAPACITY];
+        int reset = strcmp(method, "reset_preferences") == 0;
+        enum msys_native_preferences_result result;
+        if(reset != 0) {
+            if(payload == NULL || msys_native_preferences_empty_request(payload) == 0)
+                result = MSYS_NATIVE_PREFERENCES_BAD_REQUEST;
+            else {
+                msys_native_preferences_defaults(&candidate);
+                result = MSYS_NATIVE_PREFERENCES_OK;
+            }
+        }
+        else result = payload != NULL
+            ? msys_native_preferences_merge(payload, &shell->preferences, &candidate)
+            : MSYS_NATIVE_PREFERENCES_BAD_REQUEST;
+        if(result == MSYS_NATIVE_PREFERENCES_OK) {
+            candidate.revision = shell->preferences.revision + 1u;
+            result = msys_native_preferences_commit(shell->preferences_path,
+                                                     &candidate);
+        }
+        if(result != MSYS_NATIVE_PREFERENCES_OK ||
+           msys_native_preferences_state_json(&candidate, response,
+                                               sizeof(response)) == 0 ||
+           msys_native_preferences_event_json(&candidate, reset, changed,
+                                               sizeof(changed)) == 0) {
+            (void)msys_mipc_send_error(&shell->ipc, id, "BAD_PREFERENCES",
+                                       "preference update failed");
+        }
+        else {
+            shell->preferences = candidate;
+            apply_launcher_preferences(shell);
+            (void)msys_mipc_send_return_json(&shell->ipc, id, response);
+            (void)msys_mipc_send_event_json(&shell->ipc,
+                "msys.shell.preferences.changed", changed);
+        }
+        free(payload);
+        return;
+    }
     if(strcmp(method, "show_recents") == 0 || strcmp(method, "show") == 0) {
         show_overview(shell);
         (void)msys_mipc_send_return_json(&shell->ipc, id, "{\"ok\":true}");
@@ -1566,8 +2063,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.0\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.0\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.1\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.1\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -1605,6 +2102,16 @@ static void handle_event(shell_state *shell, const char *packet)
         request_apps(shell);
     else if(strcmp(topic, "msys.hal.changed") == 0)
         request_wifi_inventory(shell);
+    else if(strcmp(topic, "msys.session.preferences.changed") == 0) {
+        msys_native_preferences changed;
+        char path[MSYS_NATIVE_PREFERENCES_PATH_CAPACITY];
+        if(msys_native_preferences_load(&changed, path, sizeof(path)) ==
+               MSYS_NATIVE_PREFERENCES_OK &&
+           changed.revision >= shell->preferences.revision) {
+            shell->preferences = changed;
+            apply_launcher_preferences(shell);
+        }
+    }
     else if(strcmp(topic, "msys.timezone.changed") == 0) {
         tzset();
         shell->clock_text[0] = '\0';
@@ -1706,6 +2213,7 @@ static void shutdown_shell(shell_state *shell)
     size_t index;
     bitmaps_dispose(shell->app_icons, MSYS_NATIVE_MAX_APPS);
     bitmaps_dispose(shell->task_previews, MSYS_NATIVE_MAX_TASKS);
+    bitmap_dispose(&shell->wallpaper);
     for(index = 0u; index < SURFACE_COUNT; index++) {
         if(shell->views[index].document != NULL)
             msys_ui_document_destroy(shell->views[index].document);
@@ -1734,10 +2242,36 @@ int main(int argc, char **argv)
     bool reduced_motion = false;
     int exit_code;
     int index;
+    const char *state_directory;
+    enum msys_native_preferences_result preference_result;
     memset(&shell, 0, sizeof(shell));
+    shell.launcher_folder = -1;
+    shell.launcher_selected = -1;
+    shell.launcher_drag_source = -1;
+    shell.launcher_drag_target = -1;
     shell.chinese = locale_is_chinese();
-    shell.buttons_mode = getenv("MSYS_NATIVE_NAV_MODE") != NULL &&
-                         strcmp(getenv("MSYS_NATIVE_NAV_MODE"), "buttons") == 0;
+    preference_result = msys_native_preferences_load(
+        &shell.preferences, shell.preferences_path,
+        sizeof(shell.preferences_path));
+    if(preference_result != MSYS_NATIVE_PREFERENCES_OK &&
+       preference_result != MSYS_NATIVE_PREFERENCES_NO_STATE_DIR)
+        fprintf(stderr, "msys-shell-lvgl: invalid preferences; using defaults\n");
+    shell.buttons_mode = strcmp(shell.preferences.navigation_mode, "buttons") == 0;
+    if(shell.preferences.revision == 0u && getenv("MSYS_NATIVE_NAV_MODE") != NULL) {
+        shell.legacy_navigation_override = 1;
+        shell.buttons_mode = strcmp(getenv("MSYS_NATIVE_NAV_MODE"), "buttons") == 0;
+    }
+    state_directory = getenv("MSYS_COMPONENT_STATE_DIR");
+    if(state_directory == NULL || state_directory[0] == '\0')
+        state_directory = getenv("MSYS_APP_STATE_DIR");
+    if(msys_native_launcher_layout_load(&shell.launcher_layout,
+                                        state_directory) == 0) {
+        msys_native_launcher_layout_init(&shell.launcher_layout);
+        if(state_directory != NULL && state_directory[0] == '/')
+            (void)snprintf(shell.launcher_layout.path,
+                sizeof(shell.launcher_layout.path), "%s/launcher-layout.v1",
+                state_directory);
+    }
     shell.packet = malloc(MSYS_MIPC_RECV_CAPACITY);
     shell.next_request_id = 100u;
     msys_native_system_metrics_init(&shell.metrics);
@@ -1747,7 +2281,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.0\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.1\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","
@@ -1775,6 +2309,10 @@ int main(int argc, char **argv)
             return 2;
         }
     }
+    shell.output = output;
+    shell.allow_acrylic = output == MSYS_UI_OUTPUT_HDMI ||
+        (getenv("MSYS_UI_ALLOW_ACRYLIC") != NULL &&
+         strcmp(getenv("MSYS_UI_ALLOW_ACRYLIC"), "1") == 0);
     active_shell = &shell;
     (void)signal(SIGINT, signal_handler);
     (void)signal(SIGTERM, signal_handler);

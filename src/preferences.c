@@ -30,8 +30,14 @@ enum preference_field {
     FIELD_GRID_COLUMNS = 1u << 7,
     FIELD_GRID_ROWS = 1u << 8,
     FIELD_ACRYLIC = 1u << 9,
+    FIELD_NAVIGATION_MODE = 1u << 10,
+    FIELD_ICON_SPACING = 1u << 11,
+    FIELD_FOLDERS_ENABLED = 1u << 12,
+    FIELD_LARGE_FOLDERS_ENABLED = 1u << 13,
+    FIELD_ANIMATIONS_ENABLED = 1u << 14,
+    FIELD_REDUCE_MOTION = 1u << 15,
     FIELD_REQUIRED_V1 = (1u << 6) - 1u,
-    FIELD_ALL = (1u << 10) - 1u
+    FIELD_ALL = (1u << 16) - 1u
 };
 
 static void skip_space(json_cursor *cursor)
@@ -188,6 +194,12 @@ static unsigned field_bit(const char *name)
     if (strcmp(name, "grid_columns") == 0) return FIELD_GRID_COLUMNS;
     if (strcmp(name, "grid_rows") == 0) return FIELD_GRID_ROWS;
     if (strcmp(name, "acrylic") == 0) return FIELD_ACRYLIC;
+    if (strcmp(name, "navigation_mode") == 0) return FIELD_NAVIGATION_MODE;
+    if (strcmp(name, "icon_spacing") == 0) return FIELD_ICON_SPACING;
+    if (strcmp(name, "folders_enabled") == 0) return FIELD_FOLDERS_ENABLED;
+    if (strcmp(name, "large_folders_enabled") == 0) return FIELD_LARGE_FOLDERS_ENABLED;
+    if (strcmp(name, "animations_enabled") == 0) return FIELD_ANIMATIONS_ENABLED;
+    if (strcmp(name, "reduce_motion") == 0) return FIELD_REDUCE_MOTION;
     return 0u;
 }
 
@@ -282,6 +294,33 @@ static enum msys_native_preferences_result parse_preferences_object(
             if (!json_boolean(cursor, &preferences->acrylic)) {
                 return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
             }
+        } else if (bit == FIELD_NAVIGATION_MODE) {
+            if (!json_string(cursor, preferences->navigation_mode,
+                             sizeof(preferences->navigation_mode)) ||
+                (strcmp(preferences->navigation_mode, "buttons") != 0 &&
+                 strcmp(preferences->navigation_mode, "pill") != 0)) {
+                return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
+            }
+        } else if (bit == FIELD_ICON_SPACING) {
+            uint64_t value;
+            if (!json_u64(cursor, &value) || value > 48u) {
+                return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
+            }
+            preferences->icon_spacing = (int)value;
+        } else if (bit == FIELD_FOLDERS_ENABLED ||
+                   bit == FIELD_LARGE_FOLDERS_ENABLED ||
+                   bit == FIELD_ANIMATIONS_ENABLED ||
+                   bit == FIELD_REDUCE_MOTION) {
+            int *target = bit == FIELD_FOLDERS_ENABLED
+                ? &preferences->folders_enabled
+                : (bit == FIELD_LARGE_FOLDERS_ENABLED
+                    ? &preferences->large_folders_enabled
+                    : (bit == FIELD_ANIMATIONS_ENABLED
+                        ? &preferences->animations_enabled
+                        : &preferences->reduce_motion));
+            if (!json_boolean(cursor, target)) {
+                return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
+            }
         } else {
             if (!json_string(cursor, preferences->sort, sizeof(preferences->sort)) ||
                 (strcmp(preferences->sort, "name") != 0 &&
@@ -320,6 +359,13 @@ void msys_native_preferences_defaults(msys_native_preferences *preferences)
     preferences->grid_rows = 0;
     preferences->show_labels = 1;
     preferences->acrylic = 0;
+    (void)snprintf(preferences->navigation_mode,
+                   sizeof(preferences->navigation_mode), "pill");
+    preferences->icon_spacing = 8;
+    preferences->folders_enabled = 1;
+    preferences->large_folders_enabled = 1;
+    preferences->animations_enabled = 1;
+    preferences->reduce_motion = 0;
     (void)snprintf(preferences->sort, sizeof(preferences->sort), "name");
 }
 
@@ -404,8 +450,8 @@ static int state_json(
         output,
         capacity,
         event != 0
-            ? "{\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"wallpaper_path\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"grid_columns\":%d,\"grid_rows\":%d,\"show_labels\":%s,\"acrylic\":%s,\"sort\":\"%s\"}%s}"
-            : "{\"schema\":\"msys.shell-preferences.v1\",\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"wallpaper_path\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"grid_columns\":%d,\"grid_rows\":%d,\"show_labels\":%s,\"acrylic\":%s,\"sort\":\"%s\"}%s}",
+            ? "{\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"wallpaper_path\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"grid_columns\":%d,\"grid_rows\":%d,\"show_labels\":%s,\"acrylic\":%s,\"navigation_mode\":\"%s\",\"icon_spacing\":%d,\"folders_enabled\":%s,\"large_folders_enabled\":%s,\"animations_enabled\":%s,\"reduce_motion\":%s,\"sort\":\"%s\"}%s}"
+            : "{\"schema\":\"msys.shell-preferences.v1\",\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"wallpaper_path\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"grid_columns\":%d,\"grid_rows\":%d,\"show_labels\":%s,\"acrylic\":%s,\"navigation_mode\":\"%s\",\"icon_spacing\":%d,\"folders_enabled\":%s,\"large_folders_enabled\":%s,\"animations_enabled\":%s,\"reduce_motion\":%s,\"sort\":\"%s\"}%s}",
         (unsigned long long)preferences->revision,
         preferences->layout,
         preferences->wallpaper_color,
@@ -416,6 +462,12 @@ static int state_json(
         preferences->grid_rows,
         preferences->show_labels != 0 ? "true" : "false",
         preferences->acrylic != 0 ? "true" : "false",
+        preferences->navigation_mode,
+        preferences->icon_spacing,
+        preferences->folders_enabled != 0 ? "true" : "false",
+        preferences->large_folders_enabled != 0 ? "true" : "false",
+        preferences->animations_enabled != 0 ? "true" : "false",
+        preferences->reduce_motion != 0 ? "true" : "false",
         preferences->sort,
         event != 0 && reset != 0 ? ",\"reset\":true" : ""
     );

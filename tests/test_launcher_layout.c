@@ -76,6 +76,7 @@ int main(void)
         &layout, 1u, 2u, "Tools 工具", 4u, &folder
     ));
     CHECK(layout.items[folder].kind == MSYS_NATIVE_LAUNCHER_FOLDER);
+    CHECK(layout.items[folder].large == 0);
     CHECK(layout.items[folder].member_count == 2u);
     CHECK(msys_native_launcher_rename_folder(
         &layout, layout.items[folder].id, "常用"
@@ -88,10 +89,12 @@ int main(void)
         &layout, layout.count - 1u, folder, 4u, &folder
     ));
     CHECK(layout.items[folder].member_count == 3u);
+    layout.items[folder].large = 1;
     CHECK(msys_native_launcher_layout_commit(&layout));
     msys_native_launcher_layout_init(&loaded);
     CHECK(msys_native_launcher_layout_load(&loaded, directory));
     CHECK(loaded.count == layout.count);
+    CHECK(loaded.items[folder].large == 1);
     CHECK(strcmp(loaded.items[folder].name, "常用") == 0);
     CHECK(loaded.items[folder].member_count == 3u);
     CHECK(msys_native_launcher_layout_reconcile(&loaded, apps, 2u, 4u));

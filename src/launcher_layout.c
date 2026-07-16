@@ -173,10 +173,11 @@ static int parse_line(msys_native_launcher_layout *layout, char *line)
     if (strcmp(kind, "A") == 0) {
         if (cursor != NULL || strchr(item.id, ':') == NULL) return 0;
         item.kind = MSYS_NATIVE_LAUNCHER_APP;
-    } else if (strcmp(kind, "F") == 0) {
+    } else if (strcmp(kind, "F") == 0 || strcmp(kind, "B") == 0) {
         field = next_field(&cursor);
         if (field == NULL || !decode(field, item.name, sizeof(item.name))) return 0;
         item.kind = MSYS_NATIVE_LAUNCHER_FOLDER;
+        item.large = strcmp(kind, "B") == 0;
         while ((field = next_field(&cursor)) != NULL) {
             if (
                 item.member_count >= MSYS_NATIVE_LAUNCHER_MAX_FOLDER_MEMBERS ||
@@ -308,7 +309,9 @@ int msys_native_launcher_layout_commit(msys_native_launcher_layout *layout)
         size_t member;
         (void)snprintf(
             prefix, sizeof(prefix), "%c\t%u\t",
-            item->kind == MSYS_NATIVE_LAUNCHER_FOLDER ? 'F' : 'A', item->page
+            item->kind == MSYS_NATIVE_LAUNCHER_FOLDER
+                ? (item->large != 0 ? 'B' : 'F') : 'A',
+            item->page
         );
         ok = write_all(fd, prefix, strlen(prefix)) && write_field(fd, item->id);
         if (ok != 0 && item->kind == MSYS_NATIVE_LAUNCHER_FOLDER) {
