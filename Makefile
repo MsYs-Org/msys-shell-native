@@ -24,11 +24,12 @@ LVGL_PACKAGE_TARGET := files/bin/msys-shell-lvgl
 LVGL_CPPFLAGS := -I$(UI_DIR)/include -I$(UI_DIR)/vendor/lvgl -I$(UI_DIR) \
 	-DLV_CONF_INCLUDE_SIMPLE
 LVGL_SOURCES := src/lvgl_main.c src/model.c src/catalog.c src/image.c \
-	src/system_metrics.c
+	src/system_metrics.c src/notification.c
 LVGL_OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/lvgl/%.o,$(LVGL_SOURCES))
 LVGL_UI_FILES := files/share/ui/shell/launcher.xml \
 	files/share/ui/shell/chrome.xml files/share/ui/shell/navigation.xml \
-	files/share/ui/shell/overview.xml
+	files/share/ui/shell/overview.xml files/share/ui/shell/notification.xml \
+	files/share/ui/shell/controls.xml files/share/ui/shell/toast.xml
 TEST_TARGET := $(BUILD_DIR)/test-model
 CATALOG_TEST_TARGET := $(BUILD_DIR)/test-catalog
 PREFERENCES_TEST_TARGET := $(BUILD_DIR)/test-preferences

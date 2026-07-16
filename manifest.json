@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.shell.native",
     "name": "MSYS Native Shell",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "kind": "system",
     "vendor": "MSYS",
     "summary": "Lean LVGL/XML shell with an Xlib compatibility fallback",
@@ -195,6 +195,28 @@
             "x11_wm_class": "org.msys.shell.task-switcher",
             "x11_wm_instance": "msys-shell-lvgl"
           }
+        },
+        "notification-center": {
+          "system": "x11",
+          "display": "inherit",
+          "mode": "overlay",
+          "title": "MSYS Notification Center",
+          "identity": {
+            "app_id": "org.msys.shell.native.notification-center",
+            "x11_wm_class": "org.msys.shell.native.notification-center",
+            "x11_wm_instance": "msys-shell-lvgl"
+          }
+        },
+        "notification-presenter": {
+          "system": "x11",
+          "display": "inherit",
+          "mode": "overlay",
+          "title": "MSYS Notifications",
+          "identity": {
+            "app_id": "org.msys.shell.native.notifications",
+            "x11_wm_class": "org.msys.shell.native.notifications",
+            "x11_wm_instance": "msys-shell-lvgl"
+          }
         }
       },
       "permissions": [
@@ -206,6 +228,8 @@
         "mipc.event:subscribe:msys.install.package_changed",
         "mipc.event:subscribe:msys.lifecycle.transition",
         "mipc.event:subscribe:msys.hal.changed",
+        "mipc.event:subscribe:msys.role.notification-presenter",
+        "mipc.event:subscribe:msys.notification.post",
         "mipc.event:publish:msys.role.ready"
       ],
       "isolation": "baseline",
@@ -229,7 +253,9 @@
             "version": "1.0.0"
           }
         },
-        {"role": "task-switcher", "exclusive": true, "priority": 89}
+        {"role": "task-switcher", "exclusive": true, "priority": 89},
+        {"role": "notification-presenter", "exclusive": true, "priority": 89},
+        {"role": "notification-center", "exclusive": true, "priority": 89}
       ],
       "x-msys-ui-provider": {
         "id": "lvgl",

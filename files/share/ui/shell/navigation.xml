@@ -3,7 +3,10 @@
         scrollable="false" style_bg_color="#ffffff" style_bg_opa="100%"
         style_border_width="0" style_pad_left="10" style_pad_right="10"
         style_pad_top="3" style_pad_bottom="3" style_pad_column="8">
-    <lv_button width="content" height="36" flex_grow="1" style_radius="16"
+    <lv_obj name="button_navigation" width="100%" height="36" flex_flow="row"
+            scrollable="false" style_bg_opa="0%" style_border_width="0"
+            style_pad_all="0" style_pad_column="8">
+    <lv_button name="back_button" width="content" height="36" flex_grow="1" style_radius="16"
                style_bg_color="#eef3fb" style_bg_opa="100%"
                style_shadow_width="0" style_border_width="0">
       <lv_label text="‹" align="center" style_text_font="msys_20"
@@ -20,7 +23,7 @@
       <lv_event-call-function trigger="clicked" callback="shell_action"
                               user_data="home"/>
     </lv_button>
-    <lv_button width="content" height="36" flex_grow="1" style_radius="16"
+    <lv_button name="apps_button" width="content" height="36" flex_grow="1" style_radius="16"
                style_bg_color="#eef3fb" style_bg_opa="100%"
                style_shadow_width="0" style_border_width="0">
       <lv_label text="▢" align="center" style_text_font="msys_20"
@@ -28,5 +31,14 @@
       <lv_event-call-function trigger="clicked" callback="shell_action"
                               user_data="apps"/>
     </lv_button>
+    </lv_obj>
+    <lv_obj name="pill_navigation" width="100%" height="36" hidden="true"
+            scrollable="false" style_bg_opa="0%" style_border_width="0"
+            style_pad_all="0">
+      <lv_obj name="navigation_pill" width="94" height="7" align="center"
+              clickable="true" scrollable="false" style_radius="4"
+              style_bg_color="#273247" style_bg_opa="100%"
+              style_border_width="0"/>
+    </lv_obj>
   </view>
 </component>

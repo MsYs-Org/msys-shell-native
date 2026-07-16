@@ -1,0 +1,42 @@
+<component>
+  <view extends="lv_obj" width="100%" height="100%" flex_flow="column"
+        scrollable="false" style_bg_color="#edf2f9" style_bg_opa="100%"
+        style_border_width="0" style_pad_left="10" style_pad_right="10"
+        style_pad_top="10" style_pad_bottom="8" style_pad_row="8">
+    <lv_obj width="100%" height="42" flex_flow="row" scrollable="false"
+            style_bg_opa="0%" style_border_width="0" style_pad_all="0"
+            style_pad_column="6">
+      <lv_label name="notification_title" text="消息" width="content"
+                flex_grow="1" align="left_mid" style_text_font="msys_20"
+                style_text_color="#182033"/>
+      <lv_label name="notification_count" text="0 条" width="52"
+                align="center" style_text_font="msys_14"
+                style_text_color="#69758a"/>
+      <lv_button name="notification_clear" width="52" height="34"
+                 style_radius="13" style_bg_color="#ffffff"
+                 style_bg_opa="100%" style_shadow_width="0"
+                 style_border_width="1" style_border_color="#d7deea">
+        <lv_label name="notification_clear_label" text="清空" align="center" style_text_font="msys_14"
+                  style_text_color="#253047"/>
+        <lv_event-call-function trigger="clicked" callback="shell_action"
+                                user_data="notification-clear"/>
+      </lv_button>
+      <lv_button name="notification_close" width="52" height="34"
+                 style_radius="13" style_bg_color="#ffffff"
+                 style_bg_opa="100%" style_shadow_width="0"
+                 style_border_width="1" style_border_color="#d7deea">
+        <lv_label name="notification_close_label" text="关闭" align="center" style_text_font="msys_14"
+                  style_text_color="#253047"/>
+        <lv_event-call-function trigger="clicked" callback="shell_action"
+                                user_data="notification-close"/>
+      </lv_button>
+    </lv_obj>
+    <lv_obj name="notification_list" width="100%" height="content"
+            flex_grow="1" flex_flow="column" scrollable="true"
+            style_bg_opa="0%" style_border_width="0" style_pad_all="1"
+            style_pad_row="8"/>
+    <lv_label name="notification_empty" text="暂无消息" width="100%"
+              align="center" style_text_font="msys_14"
+              style_text_color="#69758a"/>
+  </view>
+</component>

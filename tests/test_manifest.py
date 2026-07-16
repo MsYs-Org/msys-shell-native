@@ -16,9 +16,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.5.0")
+        self.assertEqual(self.document["package"]["version"], "0.6.0")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.5.0"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.0"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -41,7 +41,7 @@ class NativeShellManifestTests(unittest.TestCase):
         )
         self.assertTrue(all(item["exclusive"] for item in self.component["provides"]))
 
-    def test_lvgl_preview_is_one_process_with_four_dynamic_role_surfaces(self) -> None:
+    def test_lvgl_preview_is_one_process_with_dynamic_role_surfaces(self) -> None:
         component = self.lvgl_component
         self.assertEqual(component["id"], "desktop-shell-lvgl")
         self.assertEqual(component["runtime"], "native")
@@ -53,11 +53,13 @@ class NativeShellManifestTests(unittest.TestCase):
         )
         self.assertEqual(
             set(component["x-msys-role-windows"]),
-            {"launcher", "system-chrome", "navigation-bar", "task-switcher"},
+            {"launcher", "system-chrome", "navigation-bar", "task-switcher",
+             "notification-presenter", "notification-center"},
         )
         self.assertEqual(
             {item["role"] for item in component["provides"]},
-            {"launcher", "system-chrome", "navigation-bar", "task-switcher"},
+            {"launcher", "system-chrome", "navigation-bar", "task-switcher",
+             "notification-presenter", "notification-center"},
         )
         self.assertEqual(
             component["x-msys-ui-provider"]["fallback_component"],
@@ -75,8 +77,12 @@ class NativeShellManifestTests(unittest.TestCase):
         ui_dir = ROOT / "files" / "share" / "ui" / "shell"
         self.assertEqual(
             {path.name for path in ui_dir.glob("*.xml")},
-            {"launcher.xml", "chrome.xml", "navigation.xml", "overview.xml"},
+            {"launcher.xml", "chrome.xml", "navigation.xml", "overview.xml",
+             "notification.xml", "controls.xml", "toast.xml"},
         )
+        self.assertIn("msys_native_notification_append", source)
+        self.assertIn("msys_native_parse_wifi_state", source)
+        self.assertIn("msys_native_gesture_motion", source)
 
     def test_phase_two_role_boundary_does_not_claim_missing_contracts(self) -> None:
         source = (ROOT / "README.md").read_text(encoding="utf-8")

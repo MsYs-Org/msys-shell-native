@@ -1,6 +1,16 @@
 # MSYS Native Shell
 
-Current source version: `0.5.0`.
+Current source version: `0.6.0`.
+
+Version 0.6.0 adds the second LVGL parity slice without selecting it by
+default. Notification history, notification-presenter Toasts, and Quick
+Controls are now real light LVGL overlays backed by the existing bounded C
+notification ring and mIPC contracts. Wi-Fi reads HAL inventory/state and
+never invents connectivity; Wi-Fi, Bluetooth, and system rows open the typed
+Settings panels. Navigation supports the profile-selected three buttons or a
+pill whose short release sends Home and whose held 28-pixel upward gesture
+opens Overview. Press feedback remains object-local and uses the shared LVGL
+animation policy.
 
 Version 0.5.0 adds the first production-shaped LVGL 9.3/XML Shell slice beside
 the established Xlib implementation. One C process owns four independent X11

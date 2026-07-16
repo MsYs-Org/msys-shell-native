@@ -3,6 +3,7 @@
 #include "msys_shell_native/catalog.h"
 #include "msys_shell_native/image.h"
 #include "msys_shell_native/model.h"
+#include "msys_shell_native/notification.h"
 #include "msys_shell_native/system_metrics.h"
 
 #include "msys/mipc.h"
@@ -23,8 +24,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.5.0"
-#define SURFACE_COUNT 4u
+#define APP_VERSION "0.6.0"
+#define SURFACE_COUNT 7u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
 #define ROOT_HEIGHT 480
@@ -34,12 +35,17 @@
 #define MAX_BINDINGS (MSYS_NATIVE_MAX_APPS + MSYS_NATIVE_MAX_TASKS * 2u)
 #define XML_WATCH_INTERVAL_MS 250u
 #define METRICS_INTERVAL_MS 1000u
+#define WIFI_REFRESH_INTERVAL_MS 10000u
+#define TOAST_VISIBLE_MS 1800u
 
 enum shell_surface_id {
     SURFACE_LAUNCHER = 0,
     SURFACE_CHROME,
     SURFACE_NAVIGATION,
-    SURFACE_OVERVIEW
+    SURFACE_OVERVIEW,
+    SURFACE_NOTIFICATION,
+    SURFACE_CONTROLS,
+    SURFACE_TOAST
 };
 
 enum pending_kind {
@@ -50,7 +56,10 @@ enum pending_kind {
     PENDING_START,
     PENDING_FOCUS,
     PENDING_CLOSE,
-    PENDING_NAVIGATION
+    PENDING_NAVIGATION,
+    PENDING_WIFI_INVENTORY,
+    PENDING_WIFI_STATE,
+    PENDING_SETTINGS
 };
 
 enum binding_action {
@@ -105,13 +114,26 @@ struct shell_state {
     ui_binding bindings[MAX_BINDINGS];
     size_t binding_count;
     msys_native_system_metrics metrics;
+    msys_native_notification_history notifications;
+    msys_native_gesture pill_gesture;
+    lv_timer_t *toast_timer;
     uint64_t next_metrics_at;
     uint64_t next_xml_watch_at;
+    uint64_t next_wifi_refresh_at;
     uint64_t run_until;
     int overview_visible;
     int overview_pending;
+    int notification_visible;
+    int controls_visible;
+    int toast_visible;
+    int buttons_mode;
+    int wifi_known;
+    int wifi_available;
+    int wifi_connected;
+    int wifi_signal_level;
     int watch_ui;
     int chinese;
+    char wifi_device[MSYS_NATIVE_COMPONENT_CAPACITY];
     char ui_dir[PATH_MAX];
     char clock_text[16];
 };
@@ -123,6 +145,13 @@ static uint64_t monotonic_ms(void)
 {
     struct timespec value;
     (void)clock_gettime(CLOCK_MONOTONIC, &value);
+    return (uint64_t)value.tv_sec * 1000u + (uint64_t)value.tv_nsec / 1000000u;
+}
+
+static uint64_t realtime_ms(void)
+{
+    struct timespec value;
+    (void)clock_gettime(CLOCK_REALTIME, &value);
     return (uint64_t)value.tv_sec * 1000u + (uint64_t)value.tv_nsec / 1000000u;
 }
 
@@ -155,6 +184,17 @@ static void set_label(shell_view *view, const char *name, const char *text)
 {
     lv_obj_t *object = view_object(view, name);
     if(object != NULL) lv_label_set_text(object, text != NULL ? text : "");
+}
+
+static void set_label_if_changed(shell_view *view, const char *name,
+                                 const char *text)
+{
+    lv_obj_t *object = view_object(view, name);
+    const char *current;
+    if(object == NULL) return;
+    if(text == NULL) text = "";
+    current = lv_label_get_text(object);
+    if(current == NULL || strcmp(current, text) != 0) lv_label_set_text(object, text);
 }
 
 static void bitmap_dispose(ui_bitmap *bitmap)
@@ -292,31 +332,38 @@ static int window_payload(const char *window_id, char *output, size_t capacity)
     return written >= 0 && (size_t)written < capacity;
 }
 
-static void toast_delete_cb(lv_timer_t *timer)
+static void hide_toast(shell_state *shell)
 {
-    lv_obj_t *toast = lv_timer_get_user_data(timer);
-    if(toast != NULL && lv_obj_is_valid(toast)) lv_obj_delete(toast);
+    if(shell == NULL) return;
+    if(shell->toast_timer != NULL) {
+        lv_timer_delete(shell->toast_timer);
+        shell->toast_timer = NULL;
+    }
+    if(shell->toast_visible == 0) return;
+    shell->toast_visible = 0;
+    msys_ui_surface_hide(shell->views[SURFACE_TOAST].surface);
+}
+
+static void toast_hide_cb(lv_timer_t *timer)
+{
+    shell_state *shell = lv_timer_get_user_data(timer);
+    if(shell != NULL) {
+        shell->toast_timer = NULL;
+        hide_toast(shell);
+    }
     lv_timer_delete(timer);
 }
 
 static void show_toast(shell_state *shell, const char *message)
 {
-    shell_view *view = &shell->views[SURFACE_LAUNCHER];
-    lv_obj_t *toast;
-    lv_obj_t *label;
-    lv_obj_t *screen = msys_ui_surface_screen(view->surface);
-    toast = lv_obj_create(screen);
-    lv_obj_add_style(toast, msys_ui_theme_toast(view->theme), LV_PART_MAIN);
-    lv_obj_set_size(toast, 270, LV_SIZE_CONTENT);
-    lv_obj_align(toast, LV_ALIGN_TOP_MID, 0, 8);
-    label = lv_label_create(toast);
-    lv_obj_set_width(label, 244);
-    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(label, message);
-    lv_obj_set_style_text_font(label, msys_ui_theme_font(view->theme, 14),
-                               LV_PART_MAIN);
-    msys_ui_animate_toast(toast, shell->policy, true);
-    (void)lv_timer_create(toast_delete_cb, 1800u, toast);
+    lv_obj_t *root;
+    set_label_if_changed(&shell->views[SURFACE_TOAST], "toast_message", message);
+    if(shell->toast_visible != 0) return;
+    shell->toast_visible = 1;
+    msys_ui_surface_show(shell->views[SURFACE_TOAST].surface);
+    root = msys_ui_document_root(shell->views[SURFACE_TOAST].document);
+    if(root != NULL) msys_ui_animate_toast(root, shell->policy, true);
+    shell->toast_timer = lv_timer_create(toast_hide_cb, TOAST_VISIBLE_MS, shell);
 }
 
 static void opening_delete_cb(lv_timer_t *timer)
@@ -366,8 +413,15 @@ static void request_apps(shell_state *shell);
 static void request_tasks(shell_state *shell);
 static void show_overview(shell_state *shell);
 static void hide_overview(shell_state *shell);
+static void show_notification_center(shell_state *shell);
+static void hide_notification_center(shell_state *shell);
+static void show_controls(shell_state *shell);
+static void hide_controls(shell_state *shell);
 static void render_launcher(shell_state *shell);
 static void render_overview(shell_state *shell);
+static void render_notifications(shell_state *shell);
+static void request_wifi_inventory(shell_state *shell);
+static void send_navigation(shell_state *shell, const char *action);
 
 static void start_app(shell_state *shell, size_t index)
 {
@@ -446,6 +500,60 @@ static void item_event_cb(lv_event_t *event)
             focus_task(binding->shell, binding->index);
         else if(binding->action == BIND_CLOSE_TASK)
             close_task(binding->shell, binding->index);
+    }
+}
+
+static void feedback_event_cb(lv_event_t *event)
+{
+    shell_state *shell = lv_event_get_user_data(event);
+    lv_event_code_t code = lv_event_get_code(event);
+    lv_obj_t *object = lv_event_get_current_target(event);
+    if(shell == NULL || object == NULL) return;
+    if(code == LV_EVENT_PRESSED)
+        msys_ui_animate_press(object, shell->policy, true);
+    else if(code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST)
+        msys_ui_animate_press(object, shell->policy, false);
+}
+
+static int event_point(lv_event_t *event, lv_point_t *point)
+{
+    lv_indev_t *indev = lv_event_get_indev(event);
+    if(indev == NULL || point == NULL) return 0;
+    lv_indev_get_point(indev, point);
+    return 1;
+}
+
+static void pill_event_cb(lv_event_t *event)
+{
+    shell_state *shell = lv_event_get_user_data(event);
+    lv_event_code_t code = lv_event_get_code(event);
+    lv_obj_t *pill = lv_event_get_current_target(event);
+    lv_point_t point;
+    if(shell == NULL || pill == NULL) return;
+    if(code == LV_EVENT_PRESSED && event_point(event, &point) != 0) {
+        msys_native_gesture_begin(&shell->pill_gesture, point.y, monotonic_ms());
+        msys_ui_animate_press(pill, shell->policy, true);
+    }
+    else if(code == LV_EVENT_PRESSING && event_point(event, &point) != 0) {
+        enum msys_native_navigation_action action = msys_native_gesture_motion(
+            &shell->pill_gesture, point.y, monotonic_ms());
+        int inward = msys_native_gesture_inward(&shell->pill_gesture);
+        if(inward > 12) inward = 12;
+        lv_obj_set_style_translate_y(pill, (int16_t)-inward, LV_PART_MAIN);
+        if(action == MSYS_NATIVE_NAV_APPS) show_overview(shell);
+    }
+    else if(code == LV_EVENT_RELEASED && event_point(event, &point) != 0) {
+        int was_latched = shell->pill_gesture.latched;
+        (void)msys_native_gesture_release(&shell->pill_gesture, point.y,
+                                          monotonic_ms());
+        lv_obj_set_style_translate_y(pill, 0, LV_PART_MAIN);
+        msys_ui_animate_press(pill, shell->policy, false);
+        if(was_latched == 0) send_navigation(shell, "home");
+    }
+    else if(code == LV_EVENT_PRESS_LOST) {
+        shell->pill_gesture.active = 0;
+        lv_obj_set_style_translate_y(pill, 0, LV_PART_MAIN);
+        msys_ui_animate_press(pill, shell->policy, false);
     }
 }
 
@@ -646,6 +754,114 @@ static void render_overview(shell_state *shell)
     render_metrics(shell);
 }
 
+static void notification_time(const msys_native_notification *item,
+                              char *output, size_t capacity)
+{
+    time_t seconds;
+    struct tm local;
+    if(item == NULL || output == NULL || capacity == 0u) return;
+    seconds = (time_t)(item->timestamp_ms / 1000u);
+    if(localtime_r(&seconds, &local) == NULL ||
+       strftime(output, capacity, "%H:%M", &local) == 0u)
+        (void)snprintf(output, capacity, "--:--");
+}
+
+static void render_notifications(shell_state *shell)
+{
+    shell_view *view = &shell->views[SURFACE_NOTIFICATION];
+    lv_obj_t *list = view_object(view, "notification_list");
+    char count_text[32];
+    size_t index;
+    if(list == NULL) return;
+    lv_obj_clean(list);
+    for(index = 0u; index < shell->notifications.count; index++) {
+        const msys_native_notification *item =
+            msys_native_notification_newest(&shell->notifications, index);
+        lv_obj_t *card;
+        lv_obj_t *header;
+        lv_obj_t *title;
+        lv_obj_t *time_label;
+        lv_obj_t *message;
+        char time_text[16];
+        if(item == NULL) continue;
+        card = lv_obj_create(list);
+        lv_obj_set_width(card, LV_PCT(100));
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_radius(card, 18, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0xffffff), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(card, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(card, lv_color_hex(0xd7deea), LV_PART_MAIN);
+        lv_obj_set_style_pad_all(card, 12, LV_PART_MAIN);
+        lv_obj_set_style_pad_row(card, 6, LV_PART_MAIN);
+        header = lv_obj_create(card);
+        lv_obj_remove_style_all(header);
+        lv_obj_set_size(header, LV_PCT(100), 22);
+        title = lv_label_create(header);
+        lv_obj_set_width(title, 220);
+        lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+        lv_label_set_text(title, item->title[0] != '\0' ? item->title :
+                          (item->source[0] != '\0' ? item->source :
+                           localized(shell, "系统消息", "System message")));
+        lv_obj_set_style_text_font(title, msys_ui_theme_font(view->theme, 16),
+                                   LV_PART_MAIN);
+        lv_obj_set_style_text_color(title, lv_color_hex(0x182033), LV_PART_MAIN);
+        lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);
+        notification_time(item, time_text, sizeof(time_text));
+        time_label = lv_label_create(header);
+        lv_label_set_text(time_label, time_text);
+        lv_obj_set_style_text_font(time_label,
+                                   msys_ui_theme_font(view->theme, 12), LV_PART_MAIN);
+        lv_obj_set_style_text_color(time_label, lv_color_hex(0x69758a), LV_PART_MAIN);
+        lv_obj_align(time_label, LV_ALIGN_RIGHT_MID, 0, 0);
+        message = lv_label_create(card);
+        lv_obj_set_width(message, LV_PCT(100));
+        lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(message, item->message[0] != '\0' ? item->message :
+                          localized(shell, "无正文", "No body"));
+        lv_obj_set_style_text_font(message, msys_ui_theme_font(view->theme, 14),
+                                   LV_PART_MAIN);
+        lv_obj_set_style_text_color(message, lv_color_hex(0x4f5b70), LV_PART_MAIN);
+    }
+    (void)snprintf(count_text, sizeof(count_text),
+                   shell->chinese != 0 ? "%zu 条" : "%zu", shell->notifications.count);
+    set_label_if_changed(view, "notification_count", count_text);
+    set_label_if_changed(view, "notification_empty",
+                         shell->notifications.count == 0u
+                             ? localized(shell, "暂无消息", "No notifications")
+                             : "");
+}
+
+static void wifi_update_labels(shell_state *shell)
+{
+    char chrome[32];
+    const char *status;
+    if(shell->wifi_known == 0) {
+        (void)snprintf(chrome, sizeof(chrome), "Wi-Fi ·");
+        status = localized(shell, "正在读取实际状态…", "Reading actual state…");
+    }
+    else if(shell->wifi_available == 0) {
+        (void)snprintf(chrome, sizeof(chrome), "Wi-Fi ×");
+        status = localized(shell, "Wi-Fi 硬件不可用", "Wi-Fi hardware unavailable");
+    }
+    else if(shell->wifi_connected == 0) {
+        (void)snprintf(chrome, sizeof(chrome), "Wi-Fi 0");
+        status = localized(shell, "未连接", "Disconnected");
+    }
+    else {
+        (void)snprintf(chrome, sizeof(chrome), "Wi-Fi %d", shell->wifi_signal_level);
+        status = shell->wifi_signal_level >= 3
+                     ? localized(shell, "已连接 · 信号强", "Connected · strong")
+                     : (shell->wifi_signal_level == 2
+                            ? localized(shell, "已连接 · 信号中", "Connected · medium")
+                            : localized(shell, "已连接 · 信号弱", "Connected · weak"));
+    }
+    set_label_if_changed(&shell->views[SURFACE_CHROME], "wifi", chrome);
+    set_label_if_changed(&shell->views[SURFACE_CONTROLS],
+                         "control_wifi_status", status);
+}
+
 static void request_apps(shell_state *shell)
 {
     set_label(&shell->views[SURFACE_LAUNCHER], "launcher_status",
@@ -654,6 +870,61 @@ static void request_apps(shell_state *shell)
        0u) {
         set_label(&shell->views[SURFACE_LAUNCHER], "launcher_status",
                   localized(shell, "Core 暂不可用", "Core is unavailable"));
+    }
+}
+
+static int pending_kind_active(const shell_state *shell, enum pending_kind kind)
+{
+    size_t index;
+    for(index = 0u; index < MAX_PENDING; index++) {
+        if(shell->pending[index].kind == kind && shell->pending[index].id != 0u)
+            return 1;
+    }
+    return 0;
+}
+
+static void request_wifi_state(shell_state *shell)
+{
+    char escaped[MSYS_NATIVE_COMPONENT_CAPACITY * 2u];
+    char payload[MSYS_NATIVE_COMPONENT_CAPACITY * 2u + 48u];
+    if(shell->wifi_device[0] == '\0' ||
+       msys_native_json_escape(shell->wifi_device, escaped, sizeof(escaped)) == 0) {
+        shell->wifi_known = 1;
+        shell->wifi_available = 0;
+        shell->wifi_connected = 0;
+        shell->wifi_signal_level = 0;
+        wifi_update_labels(shell);
+        return;
+    }
+    (void)snprintf(payload, sizeof(payload),
+                   "{\"id\":\"%s\",\"refresh\":false}", escaped);
+    if(send_call(shell, PENDING_WIFI_STATE, 0u, "role:hal-manager", "get_state",
+                 payload, 1) == 0u) {
+        shell->wifi_known = 1;
+        shell->wifi_available = 0;
+        shell->wifi_connected = 0;
+        shell->wifi_signal_level = 0;
+        wifi_update_labels(shell);
+    }
+}
+
+static void request_wifi_inventory(shell_state *shell)
+{
+    if(shell->supervised == 0) return;
+    if(pending_kind_active(shell, PENDING_WIFI_INVENTORY) != 0 ||
+       pending_kind_active(shell, PENDING_WIFI_STATE) != 0) {
+        shell->next_wifi_refresh_at = monotonic_ms() + 1000u;
+        return;
+    }
+    shell->next_wifi_refresh_at = monotonic_ms() + WIFI_REFRESH_INTERVAL_MS;
+    if(send_call(shell, PENDING_WIFI_INVENTORY, 0u, "role:hal-manager",
+                 "inventory", "{\"domains\":[\"network\"],\"refresh\":false}",
+                 1) == 0u) {
+        shell->wifi_known = 1;
+        shell->wifi_available = 0;
+        shell->wifi_connected = 0;
+        shell->wifi_signal_level = 0;
+        wifi_update_labels(shell);
     }
 }
 
@@ -670,6 +941,9 @@ static void request_tasks(shell_state *shell)
 static void show_overview(shell_state *shell)
 {
     if(shell->overview_visible != 0) return;
+    hide_notification_center(shell);
+    hide_controls(shell);
+    hide_toast(shell);
     shell->overview_pending = 1;
     set_label(&shell->views[SURFACE_OVERVIEW], "overview_status",
               localized(shell, "正在读取最近任务…", "Loading recent tasks…"));
@@ -694,6 +968,68 @@ static void hide_overview(shell_state *shell)
     msys_ui_surface_hide(shell->views[SURFACE_OVERVIEW].surface);
 }
 
+static void hide_notification_center(shell_state *shell)
+{
+    if(shell->notification_visible == 0) return;
+    shell->notification_visible = 0;
+    msys_ui_surface_hide(shell->views[SURFACE_NOTIFICATION].surface);
+}
+
+static void hide_controls(shell_state *shell)
+{
+    if(shell->controls_visible == 0) return;
+    shell->controls_visible = 0;
+    msys_ui_surface_hide(shell->views[SURFACE_CONTROLS].surface);
+}
+
+static void show_notification_center(shell_state *shell)
+{
+    if(shell->notification_visible != 0) {
+        hide_notification_center(shell);
+        return;
+    }
+    hide_overview(shell);
+    hide_controls(shell);
+    hide_toast(shell);
+    render_notifications(shell);
+    shell->notification_visible = 1;
+    msys_ui_surface_show(shell->views[SURFACE_NOTIFICATION].surface);
+}
+
+static void show_controls(shell_state *shell)
+{
+    lv_obj_t *root;
+    if(shell->controls_visible != 0) {
+        hide_controls(shell);
+        return;
+    }
+    hide_overview(shell);
+    hide_notification_center(shell);
+    hide_toast(shell);
+    wifi_update_labels(shell);
+    request_wifi_inventory(shell);
+    shell->controls_visible = 1;
+    msys_ui_surface_show(shell->views[SURFACE_CONTROLS].surface);
+    root = msys_ui_document_root(shell->views[SURFACE_CONTROLS].document);
+    if(root != NULL) msys_ui_animate_opening(root, shell->policy);
+}
+
+static void start_settings_panel(shell_state *shell, const char *panel)
+{
+    char payload[320];
+    if(panel == NULL || pending_kind_active(shell, PENDING_SETTINGS) != 0) return;
+    (void)snprintf(
+        payload, sizeof(payload),
+        "{\"component\":\"org.msys.settings:main\",\"activation\":{"
+        "\"action\":\"settings-panel\",\"name\":\"%s\"}}",
+        panel);
+    if(send_call(shell, PENDING_SETTINGS, 0u, "msys.core", "start", payload, 0) ==
+       0u)
+        show_toast(shell, localized(shell, "设置不可用", "Settings unavailable"));
+    else
+        hide_controls(shell);
+}
+
 static void send_navigation(shell_state *shell, const char *action)
 {
     char payload[96];
@@ -709,7 +1045,19 @@ static void send_navigation(shell_state *shell, const char *action)
         hide_overview(shell);
         return;
     }
-    if(strcmp(action, "home") == 0) hide_overview(shell);
+    if(strcmp(action, "back") == 0 && shell->notification_visible != 0) {
+        hide_notification_center(shell);
+        return;
+    }
+    if(strcmp(action, "back") == 0 && shell->controls_visible != 0) {
+        hide_controls(shell);
+        return;
+    }
+    if(strcmp(action, "home") == 0) {
+        hide_overview(shell);
+        hide_notification_center(shell);
+        hide_controls(shell);
+    }
     (void)snprintf(payload, sizeof(payload),
                    "{\"action\":\"%s\",\"input\":\"button\"}", action);
     (void)send_call(shell, PENDING_NAVIGATION, 0u, "role:window-manager",
@@ -726,13 +1074,23 @@ static void xml_action_cb(lv_event_t *event)
     else if(strcmp(action, "close-overview") == 0)
         hide_overview(active_shell);
     else if(strcmp(action, "notifications") == 0)
-        show_toast(active_shell,
-                   localized(active_shell, "消息中心正在迁移到 LVGL",
-                             "Notification center migration is in progress"));
+        show_notification_center(active_shell);
     else if(strcmp(action, "controls") == 0)
-        show_toast(active_shell,
-                   localized(active_shell, "控制中心正在迁移到 LVGL",
-                             "Quick controls migration is in progress"));
+        show_controls(active_shell);
+    else if(strcmp(action, "notification-close") == 0)
+        hide_notification_center(active_shell);
+    else if(strcmp(action, "notification-clear") == 0) {
+        (void)msys_native_notification_clear(&active_shell->notifications);
+        render_notifications(active_shell);
+    }
+    else if(strcmp(action, "controls-close") == 0)
+        hide_controls(active_shell);
+    else if(strcmp(action, "control-wifi") == 0)
+        start_settings_panel(active_shell, "wifi");
+    else if(strcmp(action, "control-bluetooth") == 0)
+        start_settings_panel(active_shell, "bluetooth");
+    else if(strcmp(action, "control-settings") == 0)
+        start_settings_panel(active_shell, "system");
 }
 
 static int bind_document(lv_xml_component_scope_t *scope, void *user_data)
@@ -752,6 +1110,50 @@ static int bind_document(lv_xml_component_scope_t *scope, void *user_data)
     return 0;
 }
 
+static void add_feedback(shell_state *shell, enum shell_surface_id surface,
+                         const char *name)
+{
+    lv_obj_t *object = view_object(&shell->views[surface], name);
+    if(object != NULL)
+        lv_obj_add_event_cb(object, feedback_event_cb, LV_EVENT_ALL, shell);
+}
+
+static void configure_interactions(shell_state *shell)
+{
+    static const struct {
+        enum shell_surface_id surface;
+        const char *name;
+    } feedback[] = {
+        {SURFACE_CHROME, "notifications"},
+        {SURFACE_CHROME, "controls"},
+        {SURFACE_NAVIGATION, "back_button"},
+        {SURFACE_NAVIGATION, "home_button"},
+        {SURFACE_NAVIGATION, "apps_button"},
+        {SURFACE_OVERVIEW, "overview_close"},
+        {SURFACE_NOTIFICATION, "notification_clear"},
+        {SURFACE_NOTIFICATION, "notification_close"},
+        {SURFACE_CONTROLS, "controls_close"},
+        {SURFACE_CONTROLS, "control_wifi"},
+        {SURFACE_CONTROLS, "control_bluetooth"},
+        {SURFACE_CONTROLS, "control_settings"},
+    };
+    lv_obj_t *buttons;
+    lv_obj_t *pill_area;
+    lv_obj_t *pill;
+    size_t index;
+    for(index = 0u; index < sizeof(feedback) / sizeof(feedback[0]); index++)
+        add_feedback(shell, feedback[index].surface, feedback[index].name);
+    buttons = view_object(&shell->views[SURFACE_NAVIGATION], "button_navigation");
+    pill_area = view_object(&shell->views[SURFACE_NAVIGATION], "pill_navigation");
+    pill = view_object(&shell->views[SURFACE_NAVIGATION], "navigation_pill");
+    if(buttons != NULL)
+        lv_obj_set_flag(buttons, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode == 0);
+    if(pill_area != NULL)
+        lv_obj_set_flag(pill_area, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode != 0);
+    if(pill != NULL)
+        lv_obj_add_event_cb(pill, pill_event_cb, LV_EVENT_ALL, shell);
+}
+
 static void localize_documents(shell_state *shell)
 {
     set_label(&shell->views[SURFACE_LAUNCHER], "launcher_title",
@@ -760,6 +1162,25 @@ static void localize_documents(shell_state *shell)
               localized(shell, "轻触启动，长按查看详情", "Tap to open"));
     set_label(&shell->views[SURFACE_OVERVIEW], "overview_title",
               localized(shell, "最近任务", "Recent tasks"));
+    set_label(&shell->views[SURFACE_NOTIFICATION], "notification_title",
+              localized(shell, "消息", "Notifications"));
+    set_label(&shell->views[SURFACE_NOTIFICATION], "notification_clear_label",
+              localized(shell, "清空", "Clear"));
+    set_label(&shell->views[SURFACE_NOTIFICATION], "notification_close_label",
+              localized(shell, "关闭", "Close"));
+    set_label(&shell->views[SURFACE_CONTROLS], "controls_title",
+              localized(shell, "控制中心", "Quick controls"));
+    set_label(&shell->views[SURFACE_CONTROLS], "controls_close_label",
+              localized(shell, "关闭", "Close"));
+    set_label(&shell->views[SURFACE_CONTROLS], "control_bluetooth_title",
+              localized(shell, "蓝牙", "Bluetooth"));
+    set_label(&shell->views[SURFACE_CONTROLS], "control_bluetooth_status",
+              localized(shell, "扫描、配对与设备管理", "Scan, pair and manage devices"));
+    set_label(&shell->views[SURFACE_CONTROLS], "control_settings_title",
+              localized(shell, "全部设置", "All settings"));
+    set_label(&shell->views[SURFACE_CONTROLS], "control_settings_status",
+              localized(shell, "系统、显示、语言与 HAL",
+                        "System, display, language and HAL"));
 }
 
 static void update_clock(shell_state *shell)
@@ -868,9 +1289,28 @@ static int initialize_ui(shell_state *shell, const char *display_name,
          .component_id="org.msys.shell.native:desktop-shell-lvgl",
          .role="task-switcher", .wm_instance="msys-shell-lvgl",
          .override_redirect=true},
+        {.x=0, .y=BAR_HEIGHT, .width=ROOT_WIDTH, .height=WORK_HEIGHT,
+         .draw_rows=DRAW_ROWS, .title="MSYS Notification Center",
+         .app_id="org.msys.shell.native.notification-center",
+         .component_id="org.msys.shell.native:desktop-shell-lvgl",
+         .role="notification-center", .wm_instance="msys-shell-lvgl",
+         .override_redirect=true},
+        {.x=0, .y=BAR_HEIGHT, .width=ROOT_WIDTH, .height=WORK_HEIGHT,
+         .draw_rows=DRAW_ROWS, .title="MSYS Quick Controls",
+         .app_id="org.msys.shell.native.quick-controls",
+         .component_id="org.msys.shell.native:desktop-shell-lvgl",
+         .role="quick-controls", .wm_instance="msys-shell-lvgl",
+         .override_redirect=true},
+        {.x=10, .y=BAR_HEIGHT+10, .width=ROOT_WIDTH-20, .height=76,
+         .draw_rows=48, .title="MSYS Notifications",
+         .app_id="org.msys.shell.native.notifications",
+         .component_id="org.msys.shell.native:desktop-shell-lvgl",
+         .role="notification-presenter", .wm_instance="msys-shell-lvgl",
+         .override_redirect=true},
     };
     const char *documents[SURFACE_COUNT] = {
-        "launcher.xml", "chrome.xml", "navigation.xml", "overview.xml"
+        "launcher.xml", "chrome.xml", "navigation.xml", "overview.xml",
+        "notification.xml", "controls.xml", "toast.xml"
     };
     size_t index;
     shell->runtime = msys_ui_runtime_create(&runtime_config);
@@ -884,8 +1324,11 @@ static int initialize_ui(shell_state *shell, const char *display_name,
             return 0;
         }
     }
+    configure_interactions(shell);
     localize_documents(shell);
     render_launcher(shell);
+    render_notifications(shell);
+    wifi_update_labels(shell);
     set_label(&shell->views[SURFACE_LAUNCHER], "launcher_status",
               localized(shell, "正在读取应用…", "Loading apps…"));
     update_clock(shell);
@@ -921,11 +1364,14 @@ static int initialize_ipc(shell_state *shell)
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.timezone.changed");
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.session.preferences.changed");
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.hal.changed");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.role.notification-presenter");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.notification.post");
     if(msys_mipc_send_ready(&shell->ipc) != MSYS_MIPC_OK) return 0;
     (void)msys_mipc_send_event_json(
         &shell->ipc, "msys.role.ready",
-        "{\"role\":\"lvgl-shell\",\"roles\":[\"launcher\",\"system-chrome\",\"navigation-bar\",\"task-switcher\"]}");
+        "{\"role\":\"lvgl-shell\",\"roles\":[\"launcher\",\"system-chrome\",\"navigation-bar\",\"task-switcher\",\"notification-presenter\",\"notification-center\"]}");
     request_apps(shell);
+    request_wifi_inventory(shell);
     return 1;
 }
 
@@ -951,6 +1397,17 @@ static void handle_reply(shell_state *shell, const char *packet,
         else if(call.kind == PENDING_APPS)
             set_label(&shell->views[SURFACE_LAUNCHER], "launcher_status",
                       localized(shell, "无法读取应用列表", "Unable to load apps"));
+        else if(call.kind == PENDING_WIFI_INVENTORY ||
+                call.kind == PENDING_WIFI_STATE) {
+            shell->wifi_known = 1;
+            shell->wifi_available = 0;
+            shell->wifi_connected = 0;
+            shell->wifi_signal_level = 0;
+            shell->wifi_device[0] = '\0';
+            wifi_update_labels(shell);
+        }
+        else if(call.kind == PENDING_SETTINGS)
+            show_toast(shell, localized(shell, "设置不可用", "Settings unavailable"));
         return;
     }
     if(call.kind == PENDING_APPS) {
@@ -989,45 +1446,165 @@ static void handle_reply(shell_state *shell, const char *packet,
     else if(call.kind == PENDING_CLOSE) {
         if(shell->overview_visible != 0) request_tasks(shell);
     }
+    else if(call.kind == PENDING_WIFI_INVENTORY) {
+        if(msys_native_parse_wifi_device(payload, shell->wifi_device,
+                                         sizeof(shell->wifi_device)) != 0 &&
+           shell->wifi_device[0] != '\0') {
+            shell->wifi_available = 1;
+            request_wifi_state(shell);
+        }
+        else {
+            shell->wifi_known = 1;
+            shell->wifi_available = 0;
+            shell->wifi_connected = 0;
+            shell->wifi_signal_level = 0;
+            shell->wifi_device[0] = '\0';
+            wifi_update_labels(shell);
+        }
+    }
+    else if(call.kind == PENDING_WIFI_STATE) {
+        int connected = 0;
+        int signal_known = 0;
+        int signal_dbm = 0;
+        if(msys_native_parse_wifi_state(payload, &connected, &signal_known,
+                                        &signal_dbm) != 0) {
+            shell->wifi_known = 1;
+            shell->wifi_available = 1;
+            shell->wifi_connected = connected;
+            shell->wifi_signal_level = msys_native_wifi_signal_level(
+                connected, signal_known, signal_dbm);
+        }
+        else {
+            shell->wifi_known = 1;
+            shell->wifi_available = 0;
+            shell->wifi_connected = 0;
+            shell->wifi_signal_level = 0;
+        }
+        wifi_update_labels(shell);
+    }
     free(payload);
+}
+
+static void handle_notification_call(shell_state *shell, uint64_t id,
+                                     const char *method, const char *payload)
+{
+    char small[128];
+    if(strcmp(method, "show") == 0) {
+        if(shell->notification_visible == 0) show_notification_center(shell);
+    }
+    else if(strcmp(method, "hide") == 0)
+        hide_notification_center(shell);
+    else if(strcmp(method, "toggle") == 0)
+        show_notification_center(shell);
+    else if(strcmp(method, "clear") == 0) {
+        size_t removed = msys_native_notification_clear(&shell->notifications);
+        render_notifications(shell);
+        (void)snprintf(small, sizeof(small),
+                       "{\"removed\":%zu,\"count\":0,\"visible\":%s}",
+                       removed, shell->notification_visible != 0 ? "true" : "false");
+        (void)msys_mipc_send_return_json(&shell->ipc, id, small);
+        return;
+    }
+    else if(strcmp(method, "list") == 0) {
+        uint64_t requested = shell->notifications.limit;
+        char *response = malloc(64u * 1024u);
+        if(payload != NULL)
+            (void)msys_mipc_json_get_u64(payload, "limit", &requested);
+        if(requested > shell->notifications.limit)
+            requested = shell->notifications.limit;
+        if(response == NULL ||
+           msys_native_notification_list_json(
+               &shell->notifications, (size_t)requested,
+               shell->notification_visible, response, 64u * 1024u) == 0)
+            (void)msys_mipc_send_error(&shell->ipc, id, "RESPONSE_TOO_LARGE",
+                                       "notification list");
+        else
+            (void)msys_mipc_send_return_json(&shell->ipc, id, response);
+        free(response);
+        return;
+    }
+    else {
+        (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
+        return;
+    }
+    (void)snprintf(small, sizeof(small), "{\"visible\":%s,\"count\":%zu}",
+                   shell->notification_visible != 0 ? "true" : "false",
+                   shell->notifications.count);
+    (void)msys_mipc_send_return_json(&shell->ipc, id, small);
 }
 
 static void handle_call(shell_state *shell, const char *packet)
 {
     uint64_t id;
     char method[96];
+    char logical_target[MSYS_NATIVE_COMPONENT_CAPACITY] = "";
+    char *payload = NULL;
     if(msys_mipc_json_get_u64(packet, "id", &id) != MSYS_MIPC_OK ||
        msys_mipc_json_get_string(packet, "method", method, sizeof(method), NULL) !=
            MSYS_MIPC_OK)
         return;
+    (void)msys_mipc_json_get_string(packet, "logical_target", logical_target,
+                                    sizeof(logical_target), NULL);
+    (void)json_payload_copy(packet, &payload);
+    if(strcmp(logical_target, "role:notification-center") == 0) {
+        handle_notification_call(shell, id, method, payload);
+        free(payload);
+        return;
+    }
     if(strcmp(method, "show_recents") == 0 || strcmp(method, "show") == 0) {
         show_overview(shell);
         (void)msys_mipc_send_return_json(&shell->ipc, id, "{\"ok\":true}");
     }
     else if(strcmp(method, "hide_overlays") == 0 || strcmp(method, "hide") == 0) {
         hide_overview(shell);
+        hide_notification_center(shell);
+        hide_controls(shell);
+        hide_toast(shell);
         (void)msys_mipc_send_return_json(&shell->ipc, id, "{\"ok\":true}");
     }
     else if(strcmp(method, "status") == 0) {
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.5.0\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.5.0\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.0\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.0\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
+    free(payload);
 }
 
 static void handle_event(shell_state *shell, const char *packet)
 {
     char topic[160];
+    char source[MSYS_NATIVE_NOTIFICATION_SOURCE_CAPACITY] = "";
+    char *payload = NULL;
     if(msys_mipc_json_get_string(packet, "topic", topic, sizeof(topic), NULL) !=
        MSYS_MIPC_OK)
         return;
-    if(strcmp(topic, "msys.install.package_changed") == 0 ||
+    if(strcmp(topic, "msys.role.notification-presenter") == 0 ||
+       strcmp(topic, "msys.notification.post") == 0) {
+        const msys_native_notification *newest;
+        if(json_payload_copy(packet, &payload) == 0) return;
+        (void)msys_mipc_json_get_string(packet, "source", source,
+                                        sizeof(source), NULL);
+        if(msys_native_notification_append(&shell->notifications, topic, payload,
+                                           source, realtime_ms()) != 0) {
+            if(shell->notification_visible != 0) render_notifications(shell);
+            newest = msys_native_notification_newest(&shell->notifications, 0u);
+            if(strcmp(topic, "msys.role.notification-presenter") == 0 &&
+               shell->notification_visible == 0 && newest != NULL)
+                show_toast(shell, newest->message[0] != '\0' ? newest->message :
+                           (newest->title[0] != '\0' ? newest->title :
+                            localized(shell, "新消息", "New notification")));
+        }
+        free(payload);
+    }
+    else if(strcmp(topic, "msys.install.package_changed") == 0 ||
        strcmp(topic, "msys.lifecycle.transition") == 0)
         request_apps(shell);
+    else if(strcmp(topic, "msys.hal.changed") == 0)
+        request_wifi_inventory(shell);
     else if(strcmp(topic, "msys.timezone.changed") == 0) {
         tzset();
         shell->clock_text[0] = '\0';
@@ -1068,9 +1645,12 @@ static void watch_documents(shell_state *shell)
         if(result == MSYS_UI_DOCUMENT_OK) changed = 1;
     }
     if(changed != 0) {
+        configure_interactions(shell);
         localize_documents(shell);
         render_launcher(shell);
         if(shell->overview_visible != 0) render_overview(shell);
+        render_notifications(shell);
+        wifi_update_labels(shell);
         update_clock(shell);
     }
 }
@@ -1095,6 +1675,9 @@ static int event_loop(shell_state *shell)
             render_metrics(shell);
             shell->next_metrics_at = current + METRICS_INTERVAL_MS;
         }
+        if(shell->supervised != 0 && shell->next_wifi_refresh_at != 0u &&
+           current >= shell->next_wifi_refresh_at)
+            request_wifi_inventory(shell);
         if(shell->watch_ui != 0 && current >= shell->next_xml_watch_at) {
             watch_documents(shell);
             shell->next_xml_watch_at = current + XML_WATCH_INTERVAL_MS;
@@ -1153,16 +1736,22 @@ int main(int argc, char **argv)
     int index;
     memset(&shell, 0, sizeof(shell));
     shell.chinese = locale_is_chinese();
+    shell.buttons_mode = getenv("MSYS_NATIVE_NAV_MODE") != NULL &&
+                         strcmp(getenv("MSYS_NATIVE_NAV_MODE"), "buttons") == 0;
     shell.packet = malloc(MSYS_MIPC_RECV_CAPACITY);
     shell.next_request_id = 100u;
     msys_native_system_metrics_init(&shell.metrics);
+    msys_native_notification_history_init(&shell.notifications,
+                                          MSYS_NATIVE_MAX_NOTIFICATIONS);
     if(shell.packet == NULL || resolve_ui_dir(shell.ui_dir, sizeof(shell.ui_dir)) == 0)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.5.0\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.0\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
-                 "\"navigation-bar\",\"task-switcher\"],"
+                 "\"navigation-bar\",\"task-switcher\","
+                 "\"notification-center\",\"quick-controls\","
+                 "\"notification-presenter\"],"
                  "\"fallback\":\"msys-shell-native\"}");
             free(shell.packet);
             return 0;

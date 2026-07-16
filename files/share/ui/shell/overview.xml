@@ -12,7 +12,7 @@
       <lv_label name="metrics" text="CPU --  内存 --" width="112"
                 style_text_font="msys_14" style_text_color="#69758a"
                 align="center"/>
-      <lv_button width="52" height="34" style_radius="13"
+      <lv_button name="overview_close" width="52" height="34" style_radius="13"
                  style_bg_color="#ffffff" style_bg_opa="100%"
                  style_shadow_width="0" style_border_width="1"
                  style_border_color="#d7deea">

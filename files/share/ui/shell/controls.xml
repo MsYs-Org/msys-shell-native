@@ -1,0 +1,64 @@
+<component>
+  <view extends="lv_obj" width="100%" height="100%" flex_flow="column"
+        scrollable="false" style_bg_color="#edf2f9" style_bg_opa="100%"
+        style_border_width="0" style_pad_left="12" style_pad_right="12"
+        style_pad_top="10" style_pad_bottom="10" style_pad_row="9">
+    <lv_obj width="100%" height="42" flex_flow="row" scrollable="false"
+            style_bg_opa="0%" style_border_width="0" style_pad_all="0">
+      <lv_label name="controls_title" text="控制中心" width="content"
+                flex_grow="1" align="left_mid" style_text_font="msys_20"
+                style_text_color="#182033"/>
+      <lv_button name="controls_close" width="58" height="34"
+                 style_radius="13" style_bg_color="#ffffff"
+                 style_bg_opa="100%" style_shadow_width="0"
+                 style_border_width="1" style_border_color="#d7deea">
+        <lv_label name="controls_close_label" text="关闭" align="center" style_text_font="msys_14"
+                  style_text_color="#253047"/>
+        <lv_event-call-function trigger="clicked" callback="shell_action"
+                                user_data="controls-close"/>
+      </lv_button>
+    </lv_obj>
+    <lv_button name="control_wifi" width="100%" height="78"
+               style_radius="18" style_bg_color="#ffffff"
+               style_bg_opa="100%" style_shadow_width="0"
+               style_border_width="1" style_border_color="#d7deea">
+      <lv_label name="control_wifi_title" text="Wi-Fi" align="top_left" style_text_font="msys_16"
+                style_text_color="#182033"/>
+      <lv_label name="control_wifi_status" text="正在读取实际状态…"
+                width="220" align="bottom_left" long_mode="dot"
+                style_text_font="msys_14" style_text_color="#69758a"/>
+      <lv_label text="›" align="right_mid" style_text_font="msys_20"
+                style_text_color="#3f66e8"/>
+      <lv_event-call-function trigger="clicked" callback="shell_action"
+                              user_data="control-wifi"/>
+    </lv_button>
+    <lv_button name="control_bluetooth" width="100%" height="78"
+               style_radius="18" style_bg_color="#ffffff"
+               style_bg_opa="100%" style_shadow_width="0"
+               style_border_width="1" style_border_color="#d7deea">
+      <lv_label name="control_bluetooth_title" text="蓝牙" align="top_left" style_text_font="msys_16"
+                style_text_color="#182033"/>
+      <lv_label name="control_bluetooth_status" text="扫描、配对与设备管理"
+                width="220" align="bottom_left" long_mode="dot"
+                style_text_font="msys_14" style_text_color="#69758a"/>
+      <lv_label text="›" align="right_mid" style_text_font="msys_20"
+                style_text_color="#3f66e8"/>
+      <lv_event-call-function trigger="clicked" callback="shell_action"
+                              user_data="control-bluetooth"/>
+    </lv_button>
+    <lv_button name="control_settings" width="100%" height="78"
+               style_radius="18" style_bg_color="#ffffff"
+               style_bg_opa="100%" style_shadow_width="0"
+               style_border_width="1" style_border_color="#d7deea">
+      <lv_label name="control_settings_title" text="全部设置" align="top_left" style_text_font="msys_16"
+                style_text_color="#182033"/>
+      <lv_label name="control_settings_status" text="系统、显示、语言与 HAL" width="220"
+                align="bottom_left" long_mode="dot" style_text_font="msys_14"
+                style_text_color="#69758a"/>
+      <lv_label text="›" align="right_mid" style_text_font="msys_20"
+                style_text_color="#3f66e8"/>
+      <lv_event-call-function trigger="clicked" callback="shell_action"
+                              user_data="control-settings"/>
+    </lv_button>
+  </view>
+</component>
