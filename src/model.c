@@ -203,6 +203,80 @@ void msys_native_grid_compute(
         ? 0 : ((int)item_count + grid->columns - 1) / grid->columns;
     grid->content_height = rows > 0
         ? rows * grid->cell_height + (rows - 1) * grid->gap : 0;
+    grid->rows = rows;
+    grid->page_capacity = rows * grid->columns;
+    grid->page_count = grid->page_capacity > 0
+        ? ((int)item_count + grid->page_capacity - 1) / grid->page_capacity : 1;
+    if (grid->page_count < 1) grid->page_count = 1;
+    grid->indicator_y = grid->top + grid->viewport_height + 4;
+}
+
+void msys_native_launcher_grid_compute(
+    msys_native_grid_layout *grid,
+    enum msys_native_shell_profile profile,
+    int width,
+    int height,
+    int requested_icon_size,
+    int requested_columns,
+    int requested_rows,
+    size_t item_count
+)
+{
+    int available_width;
+    int available_height;
+    int target;
+    if (grid == NULL) return;
+    width = width > 0 ? width : 1;
+    height = height > 0 ? height : 1;
+    grid->margin = profile == MSYS_NATIVE_PROFILE_DESKTOP ? 24 : 14;
+    grid->top = profile == MSYS_NATIVE_PROFILE_DESKTOP ? 62 : 54;
+    grid->gap = profile == MSYS_NATIVE_PROFILE_EMBEDDED ? 8 : 12;
+    grid->icon_size = bounded(requested_icon_size, 40, 96);
+    available_width = width - grid->margin * 2;
+    if (available_width < 1) available_width = 1;
+    target = profile == MSYS_NATIVE_PROFILE_DESKTOP
+        ? 128 : (profile == MSYS_NATIVE_PROFILE_EMBEDDED ? 112 : 88);
+    grid->columns = requested_columns > 0
+        ? bounded(requested_columns, 1, 8)
+        : bounded(
+            (available_width + grid->gap) / (target + grid->gap),
+            1,
+            profile == MSYS_NATIVE_PROFILE_DESKTOP ? 8 : 5
+        );
+    grid->cell_width = (
+        available_width - grid->gap * (grid->columns - 1)
+    ) / grid->columns;
+    if (grid->cell_width < 1) grid->cell_width = 1;
+    /* Reserve a tiny page-indicator strip. It changes only on a page change. */
+    available_height = height - grid->top - grid->margin - 16;
+    if (available_height < 1) available_height = 1;
+    grid->rows = requested_rows > 0
+        ? bounded(requested_rows, 1, 6)
+        : bounded(
+            (available_height + grid->gap) /
+                (grid->icon_size + 46 + grid->gap),
+            1,
+            6
+        );
+    grid->cell_height = (
+        available_height - grid->gap * (grid->rows - 1)
+    ) / grid->rows;
+    if (grid->cell_height < 1) grid->cell_height = 1;
+    if (grid->icon_size > grid->cell_height - 34) {
+        grid->icon_size = grid->cell_height - 34;
+    }
+    if (grid->icon_size > grid->cell_width - 14) {
+        grid->icon_size = grid->cell_width - 14;
+    }
+    if (grid->icon_size < 24) grid->icon_size = 24;
+    grid->viewport_height = available_height;
+    grid->content_height = available_height;
+    grid->page_capacity = grid->columns * grid->rows;
+    if (grid->page_capacity < 1) grid->page_capacity = 1;
+    grid->page_count = ((int)item_count + grid->page_capacity - 1) /
+        grid->page_capacity;
+    if (grid->page_count < 1) grid->page_count = 1;
+    grid->indicator_y = grid->top + grid->viewport_height + 7;
 }
 
 void msys_native_recents_compute(
@@ -300,6 +374,41 @@ int msys_native_scroll_clamp(int requested, int content_height, int viewport_hei
     int maximum = content_height - viewport_height;
     if (maximum < 0) maximum = 0;
     return bounded(requested, 0, maximum);
+}
+
+void msys_native_launcher_detail_compute(
+    msys_native_launcher_detail_layout *layout,
+    int height
+)
+{
+    if (layout == NULL) return;
+    height = height > 0 ? height : 1;
+    layout->top = height > 128 ? height - 128 : 0;
+    layout->primary_top = layout->top + 48;
+    layout->primary_height = 38;
+    layout->quick_top = layout->primary_top + layout->primary_height;
+    layout->quick_height = height - layout->quick_top;
+    if (layout->quick_height < 1) layout->quick_height = 1;
+}
+
+int msys_native_launcher_detail_hit(
+    int x,
+    int y,
+    int width,
+    int height,
+    size_t quick_action_count
+)
+{
+    msys_native_launcher_detail_layout layout;
+    int slot;
+    if (width <= 0 || height <= 0 || x < 0 || x >= width) return -1;
+    msys_native_launcher_detail_compute(&layout, height);
+    if (y >= layout.primary_top && y < layout.quick_top) {
+        return x < width / 2 ? 0 : 1;
+    }
+    if (y < layout.quick_top || y >= height || quick_action_count == 0u) return -1;
+    slot = x * 3 / width;
+    return (size_t)slot < quick_action_count ? 2 + slot : -1;
 }
 
 int msys_native_drag_frame_due(

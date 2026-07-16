@@ -49,6 +49,28 @@ int main(void)
     CHECK(strcmp(msys_native_task_display_name(&tasks[0], apps, app_count), "便笺") == 0);
     CHECK(strcmp(msys_native_task_display_name(&tasks[1], apps, app_count), "External") == 0);
     CHECK(strcmp(msys_native_task_display_name(&tasks[0], NULL, 0u), "MSYS Notes - clipped") == 0);
+    CHECK(msys_native_parse_apps(
+        "{\"apps\":[{\"id\":\"org.msys.apps:notes\",\"name\":\"Notes\","
+        "\"version\":\"1.2.3\",\"quick_actions\":["
+        "{\"id\":\"new\",\"label\":\"New\",\"action\":\"msys.notes.new\"},"
+        "{\"id\":\"invalid\",\"label\":\"Invalid\"}]},"
+        "{\"id\":\"org.example:beta\",\"package_version\":\"2.0\"}]}",
+        apps, MSYS_NATIVE_MAX_APPS, &count
+    ));
+    CHECK(count == 2u && strcmp(apps[0].version, "1.2.3") == 0);
+    CHECK(apps[0].quick_action_count == 1u);
+    CHECK(strcmp(apps[0].quick_actions[0].action, "msys.notes.new") == 0);
+    {
+        char action_payload[512];
+        CHECK(msys_native_quick_action_payload(
+            &apps[0].quick_actions[0], apps[0].component,
+            action_payload, sizeof(action_payload)
+        ));
+        CHECK(strcmp(action_payload,
+            "{\"action\":\"msys.notes.new\",\"component\":\"org.msys.apps:notes\"}"
+        ) == 0);
+    }
+    CHECK(strcmp(apps[1].version, "2.0") == 0);
     CHECK(msys_native_parse_tasks(
         "{\"windows\":["
         "{\"component\":\"org.example:beta\",\"id\":\"beta-hidden\",\"title\":\"Beta stale\",\"state\":\"hidden\"},"

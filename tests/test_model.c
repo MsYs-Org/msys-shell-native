@@ -82,8 +82,36 @@ static int test_adaptive_ui(void)
     CHECK(index == 0u);
     CHECK(msys_native_scroll_clamp(9999, grid.content_height, grid.viewport_height) ==
         grid.content_height - grid.viewport_height);
+    msys_native_launcher_grid_compute(
+        &grid, MSYS_NATIVE_PROFILE_MOBILE, 320, 396, 64, 4, 3, 25u
+    );
+    CHECK(grid.columns == 4 && grid.rows == 3);
+    CHECK(grid.page_capacity == 12 && grid.page_count == 3);
+    CHECK(grid.content_height == grid.viewport_height);
+    CHECK(grid.indicator_y < 396);
+    msys_native_launcher_grid_compute(
+        &grid, MSYS_NATIVE_PROFILE_MOBILE, 320, 396, 64, 0, 0, 24u
+    );
+    CHECK(grid.columns >= 2 && grid.rows >= 1 && grid.page_count > 1);
     CHECK(!msys_native_drag_frame_due(0, 0, 100u, 0u, 0));
     CHECK(!msys_native_drag_frame_due(0, 0, 100u, 0u, 1));
+    {
+        msys_native_launcher_detail_layout detail;
+        msys_native_launcher_detail_compute(&detail, 396);
+        CHECK(detail.top == 268 && detail.primary_top < detail.quick_top);
+        CHECK(msys_native_launcher_detail_hit(
+            40, detail.primary_top + 2, 320, 396, 3u
+        ) == 0);
+        CHECK(msys_native_launcher_detail_hit(
+            240, detail.primary_top + 2, 320, 396, 3u
+        ) == 1);
+        CHECK(msys_native_launcher_detail_hit(
+            40, detail.quick_top + 2, 320, 396, 3u
+        ) == 2);
+        CHECK(msys_native_launcher_detail_hit(
+            280, detail.quick_top + 2, 320, 396, 1u
+        ) == -1);
+    }
     CHECK(msys_native_drag_frame_due(1, 0, 100u, 0u, 0));
     CHECK(!msys_native_drag_frame_due(1, 0, 100u, 180u, 0));
     CHECK(msys_native_drag_frame_due(1, 0, 180u, 180u, 0));

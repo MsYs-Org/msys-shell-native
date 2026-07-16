@@ -9,15 +9,19 @@ extern "C" {
 #endif
 
 #define MSYS_NATIVE_PREFERENCES_PATH_CAPACITY 1024u
-#define MSYS_NATIVE_PREFERENCES_JSON_CAPACITY 512u
+#define MSYS_NATIVE_PREFERENCES_JSON_CAPACITY 2048u
 
 typedef struct msys_native_preferences {
     uint64_t revision;
     char layout[16];
     char wallpaper_color[8];
+    char wallpaper_path[MSYS_NATIVE_PREFERENCES_PATH_CAPACITY];
     char accent_color[8];
     int icon_size;
+    int grid_columns;
+    int grid_rows;
     int show_labels;
+    int acrylic;
     char sort[16];
 } msys_native_preferences;
 

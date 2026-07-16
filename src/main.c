@@ -5,6 +5,7 @@
 #include "msys_shell_native/catalog.h"
 #include "msys_shell_native/clock.h"
 #include "msys_shell_native/image.h"
+#include "msys_shell_native/launcher_layout.h"
 #include "msys_shell_native/model.h"
 #include "msys_shell_native/notification.h"
 #include "msys_shell_native/preferences.h"
@@ -29,7 +30,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.26"
+#define APP_VERSION "0.4.0"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8
@@ -59,6 +60,9 @@
 #define NOTIFICATION_ROW_HEIGHT 82
 #define NOTIFICATION_ROW_GAP 8
 #define NOTIFICATION_DRAG_THRESHOLD 8
+#define LAUNCHER_LONG_PRESS_MS 520u
+#define LAUNCHER_EDGE_PX 22
+#define LAUNCHER_EDGE_HOLD_MS 360u
 
 enum catalog_state {
     CATALOG_LOADING = 0,
@@ -82,7 +86,10 @@ enum pending_kind {
     PENDING_WIFI_STATE,
     PENDING_AUDIO_STATE,
     PENDING_AUDIO_VOLUME,
-    PENDING_AUDIO_MUTE
+    PENDING_AUDIO_MUTE,
+    PENDING_APP_DETAILS,
+    PENDING_APP_UNINSTALL,
+    PENDING_APP_QUICK_ACTION
 };
 
 /*
@@ -300,16 +307,22 @@ typedef struct native_shell {
     int apps_refresh_queued;
     int tasks_refresh_queued;
     enum msys_native_shell_profile profile;
-    int launcher_scroll;
+    unsigned int launcher_page;
+    int launcher_drag_start_x;
     int launcher_drag_start_y;
-    int launcher_drag_start_scroll;
     int launcher_dragging;
     int launcher_pointer_active;
-    int launcher_presented_scroll;
-    int launcher_redraw_pending;
-    uint64_t launcher_redraw_at_ms;
     int launcher_pressed;
     int launcher_pulse;
+    uint64_t launcher_pressed_at_ms;
+    uint64_t launcher_edge_at_ms;
+    int launcher_edge_direction;
+    int launcher_editing;
+    int launcher_detail_item;
+    int launcher_hover_item;
+    int launcher_folder_item;
+    int launcher_folder_pressed;
+    int launcher_layout_dirty;
     int recents_scroll;
     int recents_drag_start_x;
     int recents_drag_start_y;
@@ -359,11 +372,13 @@ typedef struct native_shell {
     int launch_transition_frame;
     int toast_animation_frame;
     native_image_cache app_icons[MSYS_NATIVE_MAX_APPS];
+    native_image_cache wallpaper;
     native_image_cache task_previews[MSYS_NATIVE_MAX_TASKS];
     msys_native_notification_history notifications;
     pending_call pending[MAX_PENDING_CALLS];
     msys_native_preferences preferences;
     char preferences_path[MSYS_NATIVE_PREFERENCES_PATH_CAPACITY];
+    msys_native_launcher_layout launcher_items;
 } native_shell;
 
 static volatile sig_atomic_t stop_requested = 0;
@@ -1532,41 +1547,214 @@ static void draw_scroll_indicator(
 static void launcher_grid(native_shell *shell, int width, int height, msys_native_grid_layout *grid)
 {
     current_profile(shell, shell->root_width, shell->root_height);
-    msys_native_grid_compute(
+    msys_native_launcher_grid_compute(
         grid,
         shell->profile,
         width,
         height,
         shell->preferences.icon_size,
-        shell->app_count
+        shell->preferences.grid_columns,
+        shell->preferences.grid_rows,
+        shell->launcher_items.count
     );
-    shell->launcher_scroll = msys_native_scroll_clamp(
-        shell->launcher_scroll, grid->content_height, grid->viewport_height
-    );
+    if (shell->launcher_page >= msys_native_launcher_page_count(&shell->launcher_items)) {
+        shell->launcher_page = msys_native_launcher_page_count(&shell->launcher_items) - 1u;
+    }
 }
 
-static void draw_app_cell(
+static void launcher_reconcile(native_shell *shell, int persist)
+{
+    XWindowAttributes attributes;
+    msys_native_grid_layout grid;
+    int changed;
+    if (!XGetWindowAttributes(shell->display, shell->launcher, &attributes)) return;
+    launcher_grid(shell, attributes.width, attributes.height, &grid);
+    changed = msys_native_launcher_layout_reconcile(
+        &shell->launcher_items, shell->apps, shell->app_count,
+        (size_t)grid.page_capacity
+    );
+    if (changed != 0 && persist != 0 &&
+        !msys_native_launcher_layout_commit(&shell->launcher_items)) {
+        fprintf(stderr, "msys-shell-native: launcher layout commit failed\n");
+    }
+    if (shell->launcher_page >= msys_native_launcher_page_count(&shell->launcher_items)) {
+        shell->launcher_page = msys_native_launcher_page_count(&shell->launcher_items) - 1u;
+    }
+}
+
+static int launcher_hit_item(
     native_shell *shell,
+    int x,
+    int y,
     const msys_native_grid_layout *grid,
-    size_t index
+    size_t *item_index,
+    size_t *slot_index
 )
 {
-    int row = (int)index / grid->columns;
-    int column = (int)index % grid->columns;
+    size_t indices[MSYS_NATIVE_LAUNCHER_MAX_ITEMS];
+    size_t count = msys_native_launcher_page_items(
+        &shell->launcher_items, shell->launcher_page,
+        indices, MSYS_NATIVE_LAUNCHER_MAX_ITEMS
+    );
+    size_t slot;
+    if (!msys_native_grid_hit(x, y, 0, grid, count, &slot)) return 0;
+    if (item_index != NULL) *item_index = indices[slot];
+    if (slot_index != NULL) *slot_index = slot;
+    return 1;
+}
+
+static int launcher_item_slot(
+    const native_shell *shell,
+    size_t item_index,
+    size_t *slot
+)
+{
+    size_t indices[MSYS_NATIVE_LAUNCHER_MAX_ITEMS];
+    size_t count;
+    size_t position;
+    count = msys_native_launcher_page_items(
+        &shell->launcher_items, shell->launcher_page,
+        indices, MSYS_NATIVE_LAUNCHER_MAX_ITEMS
+    );
+    for (position = 0u; position < count; position++) {
+        if (indices[position] == item_index) {
+            if (slot != NULL) *slot = position;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int launcher_app_index(
+    const native_shell *shell,
+    const char *component,
+    size_t *result
+)
+{
+    size_t index;
+    for (index = 0u; index < shell->app_count; index++) {
+        if (strcmp(shell->apps[index].component, component) == 0) {
+            if (result != NULL) *result = index;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void cover_rounded_image_corners(
+    native_shell *shell,
+    Drawable drawable,
+    int x,
+    int y,
+    int size,
+    int radius,
+    unsigned long background
+)
+{
+    int line;
+    if (radius < 2 || size < radius * 2) return;
+    set_foreground(shell, background);
+    for (line = 0; line < radius; line++) {
+        int dy = radius - line - 1;
+        int width = 0;
+        /* Four tiny scanlines cover square source corners. The deliberately
+         * bounded approximation avoids allocating a mask for every cell. */
+        while (
+            width < radius &&
+            (radius - width) * (radius - width) + dy * dy > radius * radius
+        ) width++;
+        if (width < 1) continue;
+        XFillRectangle(shell->display, drawable, shell->gc, x, y + line,
+            (unsigned int)width, 1u);
+        XFillRectangle(shell->display, drawable, shell->gc,
+            x + size - width, y + line, (unsigned int)width, 1u);
+        XFillRectangle(shell->display, drawable, shell->gc,
+            x, y + size - line - 1, (unsigned int)width, 1u);
+        XFillRectangle(shell->display, drawable, shell->gc,
+            x + size - width, y + size - line - 1, (unsigned int)width, 1u);
+    }
+}
+
+static const char *launcher_item_name(
+    native_shell *shell,
+    const msys_native_launcher_item *item,
+    size_t *app_index
+)
+{
+    if (item->kind == MSYS_NATIVE_LAUNCHER_FOLDER) {
+        if (app_index != NULL) *app_index = shell->app_count;
+        return item->name;
+    }
+    if (launcher_app_index(shell, item->id, app_index)) {
+        return shell->apps[*app_index].name;
+    }
+    if (app_index != NULL) *app_index = shell->app_count;
+    return item->id;
+}
+
+static void draw_folder_icon(
+    native_shell *shell,
+    const msys_native_launcher_item *item,
+    int x,
+    int y,
+    int size,
+    unsigned long background
+)
+{
+    size_t member;
+    int gap = 3;
+    int inset = 7;
+    int small = (size - inset * 2 - gap) / 2;
+    fill_rounded(shell, shell->launcher, x, y, (unsigned int)size,
+        (unsigned int)size, 14u, shell->accent_soft);
+    for (member = 0u; member < item->member_count && member < 4u; member++) {
+        size_t app_index;
+        int column = (int)member % 2;
+        int row = (int)member / 2;
+        int icon_x = x + inset + column * (small + gap);
+        int icon_y = y + inset + row * (small + gap);
+        if (launcher_app_index(shell, item->members[member], &app_index) &&
+            draw_cached_image(shell, shell->launcher,
+                &shell->app_icons[app_index], shell->apps[app_index].icon_path,
+                icon_x, icon_y, small, small)) {
+            cover_rounded_image_corners(
+                shell, shell->launcher, icon_x, icon_y, small, 4, shell->accent_soft
+            );
+        } else {
+            draw_fallback_icon(shell, shell->launcher, icon_x, icon_y, small,
+                launcher_app_index(shell, item->members[member], &app_index)
+                    ? shell->apps[app_index].name : item->members[member]);
+        }
+    }
+    (void)background;
+}
+
+static void draw_launcher_cell(
+    native_shell *shell,
+    const msys_native_grid_layout *grid,
+    size_t item_index,
+    size_t slot
+)
+{
+    const msys_native_launcher_item *item = &shell->launcher_items.items[item_index];
+    size_t app_index = shell->app_count;
+    const char *name = launcher_item_name(shell, item, &app_index);
+    int row = (int)slot / grid->columns;
+    int column = (int)slot % grid->columns;
     int x = grid->margin + column * (grid->cell_width + grid->gap);
-    int y = grid->top + row * (grid->cell_height + grid->gap) - shell->launcher_scroll;
+    int y = grid->top + row * (grid->cell_height + grid->gap);
     int icon_size = grid->icon_size;
     int icon_x;
     int icon_y = y + 7;
     int label_width = 0;
     int label_y = 0;
     int label_height = 1;
-    int active = shell->launcher_pressed == (int)index ||
-        shell->launcher_pulse == (int)index;
+    int active = shell->launcher_pressed == (int)item_index ||
+        shell->launcher_pulse == (int)item_index ||
+        shell->launcher_hover_item == (int)item_index;
     unsigned long cell_color = active != 0
         ? shell->surface_variant : shell->surface;
     if (y + grid->cell_height < grid->top || y > grid->top + grid->viewport_height) {
-        image_cache_dispose(&shell->app_icons[index]);
         return;
     }
     fill_rounded(
@@ -1596,37 +1784,200 @@ static void draw_app_cell(
     if (icon_size > grid->cell_width - 14) icon_size = grid->cell_width - 14;
     if (icon_size < 24) icon_size = 24;
     icon_x = x + (grid->cell_width - icon_size) / 2;
-    if (!draw_cached_image(
-        shell,
-        shell->launcher,
-        &shell->app_icons[index],
-        shell->apps[index].icon_path,
-        icon_x,
-        icon_y,
-        icon_size,
-        icon_size
-    )) {
-        draw_fallback_icon(
-            shell, shell->launcher, icon_x, icon_y, icon_size, shell->apps[index].name
+    if (item->kind == MSYS_NATIVE_LAUNCHER_FOLDER) {
+        draw_folder_icon(shell, item, icon_x, icon_y, icon_size, cell_color);
+    } else if (
+        app_index >= shell->app_count ||
+        !draw_cached_image(
+            shell, shell->launcher, &shell->app_icons[app_index],
+            shell->apps[app_index].icon_path, icon_x, icon_y, icon_size, icon_size
+        )
+    ) {
+        draw_fallback_icon(shell, shell->launcher, icon_x, icon_y, icon_size, name);
+    } else {
+        cover_rounded_image_corners(
+            shell, shell->launcher, icon_x, icon_y, icon_size, 10, cell_color
         );
     }
     if (shell->preferences.show_labels != 0) {
         (void)text_metrics(
-            shell, shell->apps[index].name, &label_width, &label_y, &label_height
+            shell, name, &label_width, &label_y, &label_height
         );
         if (label_width <= grid->cell_width - 14) {
             draw_text(
                 shell, shell->launcher,
                 x + (grid->cell_width - label_width) / 2,
                 icon_y + icon_size + 24,
-                shell->apps[index].name,
+                name,
                 shell->foreground
             );
         } else {
             draw_text_ellipsized(
                 shell, shell->launcher, x + 7, icon_y + icon_size + 24,
-                grid->cell_width - 14, shell->apps[index].name, shell->foreground
+                grid->cell_width - 14, name, shell->foreground
             );
+        }
+    }
+}
+
+static void draw_launcher_page_indicator(
+    native_shell *shell,
+    const msys_native_grid_layout *grid,
+    int width
+)
+{
+    unsigned int pages = msys_native_launcher_page_count(&shell->launcher_items);
+    unsigned int page;
+    int pitch = 12;
+    int begin = (width - (int)pages * pitch) / 2;
+    if (pages <= 1u) return;
+    for (page = 0u; page < pages; page++) {
+        int diameter = page == shell->launcher_page ? 7 : 5;
+        set_foreground(shell, page == shell->launcher_page ? shell->accent : shell->muted);
+        XFillArc(shell->display, shell->launcher, shell->gc,
+            begin + (int)page * pitch + (7 - diameter) / 2,
+            grid->indicator_y, (unsigned int)diameter, (unsigned int)diameter,
+            0, 360 * 64);
+    }
+}
+
+static void draw_launcher_folder_overlay(
+    native_shell *shell,
+    const msys_native_grid_layout *grid,
+    int width
+)
+{
+    const msys_native_launcher_item *folder;
+    int left = grid->margin;
+    int top = grid->top;
+    int panel_width = width - grid->margin * 2;
+    int columns = panel_width >= 260 ? 4 : 3;
+    int cell = (panel_width - 24 - (columns - 1) * 8) / columns;
+    size_t member;
+    if (
+        shell->launcher_folder_item < 0 ||
+        (size_t)shell->launcher_folder_item >= shell->launcher_items.count ||
+        shell->launcher_items.items[shell->launcher_folder_item].kind !=
+            MSYS_NATIVE_LAUNCHER_FOLDER
+    ) return;
+    folder = &shell->launcher_items.items[shell->launcher_folder_item];
+    fill_rounded(shell, shell->launcher, left, top,
+        (unsigned int)panel_width, (unsigned int)grid->viewport_height,
+        22u, shell->surface_variant);
+    draw_text_ellipsized(shell, shell->launcher, left + 16, top + 30,
+        panel_width - 32, folder->name, shell->foreground);
+    for (member = 0u; member < folder->member_count; member++) {
+        size_t app_index;
+        int column = (int)member % columns;
+        int row = (int)member / columns;
+        int x = left + 12 + column * (cell + 8);
+        int y = top + 42 + row * (cell + 28);
+        const char *name = folder->members[member];
+        if (y + cell + 20 > top + grid->viewport_height) break;
+        fill_rounded(shell, shell->launcher, x, y, (unsigned int)cell,
+            (unsigned int)cell, 12u, shell->surface);
+        if (launcher_app_index(shell, folder->members[member], &app_index)) {
+            name = shell->apps[app_index].name;
+            if (draw_cached_image(shell, shell->launcher,
+                &shell->app_icons[app_index], shell->apps[app_index].icon_path,
+                x + 5, y + 5, cell - 10, cell - 10)) {
+                cover_rounded_image_corners(shell, shell->launcher,
+                    x + 5, y + 5, cell - 10, 8, shell->surface);
+            } else {
+                draw_fallback_icon(shell, shell->launcher,
+                    x + 5, y + 5, cell - 10, name);
+            }
+        }
+        draw_text_ellipsized(shell, shell->launcher, x, y + cell + 18,
+            cell, name, shell->foreground);
+    }
+}
+
+static int launcher_folder_member_at(
+    native_shell *shell,
+    const msys_native_grid_layout *grid,
+    int width,
+    int x,
+    int y,
+    size_t *app_index
+)
+{
+    const msys_native_launcher_item *folder;
+    int left = grid->margin;
+    int panel_width = width - grid->margin * 2;
+    int columns = panel_width >= 260 ? 4 : 3;
+    int cell = (panel_width - 24 - (columns - 1) * 8) / columns;
+    int local_x = x - left - 12;
+    int local_y = y - grid->top - 42;
+    int column;
+    int row;
+    size_t member;
+    if (shell->launcher_folder_item < 0 || local_x < 0 || local_y < 0 ||
+        (size_t)shell->launcher_folder_item >= shell->launcher_items.count) return 0;
+    folder = &shell->launcher_items.items[shell->launcher_folder_item];
+    column = local_x / (cell + 8);
+    row = local_y / (cell + 28);
+    if (column < 0 || column >= columns || local_x % (cell + 8) >= cell ||
+        local_y % (cell + 28) >= cell) return 0;
+    member = (size_t)(row * columns + column);
+    if (member >= folder->member_count ||
+        !launcher_app_index(shell, folder->members[member], app_index)) return 0;
+    return 1;
+}
+
+static void draw_launcher_detail_panel(
+    native_shell *shell,
+    const msys_native_grid_layout *grid,
+    int width,
+    int height
+)
+{
+    const msys_native_launcher_item *item;
+    size_t app_index = shell->app_count;
+    const char *name;
+    msys_native_launcher_detail_layout detail;
+    int top;
+    char version[64];
+    if (shell->launcher_detail_item < 0 ||
+        (size_t)shell->launcher_detail_item >= shell->launcher_items.count) return;
+    item = &shell->launcher_items.items[shell->launcher_detail_item];
+    name = launcher_item_name(shell, item, &app_index);
+    msys_native_launcher_detail_compute(&detail, height);
+    top = detail.top;
+    if (top < grid->top) top = grid->top;
+    fill_rounded(shell, shell->launcher, 8, top,
+        (unsigned int)(width - 16), (unsigned int)(height - top - 4),
+        18u, shell->nav_background);
+    draw_text_ellipsized(shell, shell->launcher, 20, top + 25,
+        width - 40, name, shell->nav_pill);
+    if (item->kind == MSYS_NATIVE_LAUNCHER_FOLDER) {
+        (void)snprintf(version, sizeof(version), "%zu %s",
+            item->member_count, tr(shell, "launcher.folder_items"));
+    } else {
+        (void)snprintf(version, sizeof(version), "%s  %s",
+            item->id, app_index < shell->app_count && shell->apps[app_index].version[0] != '\0'
+                ? shell->apps[app_index].version : "--");
+    }
+    draw_text_ellipsized(shell, shell->launcher, 20, top + 47,
+        width - 40, version, shell->muted);
+    draw_text(shell, shell->launcher, 20,
+        detail.primary_top + detail.primary_height * 2 / 3,
+        tr(shell, "launcher.details"), shell->nav_pill);
+    if (item->kind == MSYS_NATIVE_LAUNCHER_APP) {
+        draw_text(shell, shell->launcher, width / 2,
+            detail.primary_top + detail.primary_height * 2 / 3,
+            tr(shell, "launcher.uninstall"), shell->nav_pill);
+        if (app_index < shell->app_count) {
+            size_t action;
+            for (action = 0u; action < shell->apps[app_index].quick_action_count;
+                 action++) {
+                int left = 16 + (int)action * (width - 32) / 3;
+                draw_text_ellipsized(shell, shell->launcher,
+                    left, detail.quick_top + detail.quick_height * 2 / 3,
+                    (width - 44) / 3,
+                    shell->apps[app_index].quick_actions[action].label,
+                    shell->accent_soft);
+            }
         }
     }
 }
@@ -1635,7 +1986,9 @@ static void draw_launcher(native_shell *shell)
 {
     XWindowAttributes attributes;
     msys_native_grid_layout grid;
-    size_t index;
+    size_t indices[MSYS_NATIVE_LAUNCHER_MAX_ITEMS];
+    size_t count;
+    size_t slot;
     if (!XGetWindowAttributes(shell->display, shell->launcher, &attributes)) return;
     launcher_grid(shell, attributes.width, attributes.height, &grid);
     set_foreground(shell, shell->background);
@@ -1643,6 +1996,15 @@ static void draw_launcher(native_shell *shell)
         shell->display, shell->launcher, shell->gc, 0, 0,
         (unsigned int)attributes.width, (unsigned int)attributes.height
     );
+    if (shell->preferences.wallpaper_path[0] == '/') {
+        (void)draw_cached_image(
+            shell, shell->launcher, &shell->wallpaper,
+            shell->preferences.wallpaper_path, 0, 0,
+            attributes.width, attributes.height
+        );
+        /* acrylic=true intentionally expects a pre-blurred PPM and keeps the
+         * existing static rounded surface tint; no live blur is introduced. */
+    }
     draw_text(shell, shell->launcher, grid.margin, 36, tr(shell, "launcher.title"), shell->foreground);
     draw_text_ellipsized(
         shell,
@@ -1667,15 +2029,19 @@ static void draw_launcher(native_shell *shell)
             shell, shell->launcher, grid.margin, 106,
             attributes.width - grid.margin * 2, shell->apps_message, shell->muted
         );
-    } else if (shell->app_count == 0u) {
+    } else if (shell->launcher_items.count == 0u) {
         draw_text(shell, shell->launcher, grid.margin, 78, tr(shell, "launcher.empty"), shell->muted);
     } else {
-        for (index = 0u; index < shell->app_count; index++) draw_app_cell(shell, &grid, index);
-        draw_scroll_indicator(
-            shell, shell->launcher, attributes.width - 8, grid.top,
-            grid.viewport_height, grid.content_height, grid.viewport_height,
-            shell->launcher_scroll
+        count = msys_native_launcher_page_items(
+            &shell->launcher_items, shell->launcher_page,
+            indices, MSYS_NATIVE_LAUNCHER_MAX_ITEMS
         );
+        for (slot = 0u; slot < count; slot++) {
+            draw_launcher_cell(shell, &grid, indices[slot], slot);
+        }
+        draw_launcher_page_indicator(shell, &grid, attributes.width);
+        draw_launcher_folder_overlay(shell, &grid, attributes.width);
+        draw_launcher_detail_panel(shell, &grid, attributes.width, attributes.height);
     }
 }
 
@@ -3728,8 +4094,10 @@ static void apply_preferences_visual(native_shell *shell)
     shell->accent_soft = shell->accent;
     current_profile(shell, shell->root_width, shell->root_height);
     image_caches_dispose(shell->app_icons, MSYS_NATIVE_MAX_APPS);
+    image_cache_dispose(&shell->wallpaper);
     XSetWindowBackground(shell->display, shell->launcher, shell->background);
     sort_apps(shell);
+    launcher_reconcile(shell, 1);
     draw_launcher(shell);
     draw_navigation(shell);
     if (shell->recents_visible != 0) {
@@ -4503,6 +4871,49 @@ static void activate_app(native_shell *shell, size_t index)
     }
 }
 
+static void activate_launcher_component(native_shell *shell, const char *component)
+{
+    size_t app_index;
+    if (launcher_app_index(shell, component, &app_index)) activate_app(shell, app_index);
+}
+
+static void launcher_app_action(native_shell *shell, int action)
+{
+    const msys_native_launcher_item *item;
+    size_t app_index;
+    char component[MSYS_NATIVE_COMPONENT_CAPACITY * 2u];
+    char payload[768];
+    if (shell->launcher_detail_item < 0 ||
+        (size_t)shell->launcher_detail_item >= shell->launcher_items.count) return;
+    item = &shell->launcher_items.items[shell->launcher_detail_item];
+    if (item->kind != MSYS_NATIVE_LAUNCHER_APP ||
+        !launcher_app_index(shell, item->id, &app_index) ||
+        !msys_native_json_escape(item->id, component, sizeof(component))) return;
+    if (action == 0 || action == 1) {
+        /* Details and uninstall both enter the Software Center. It owns the
+         * destructive confirmation and install-agent contract; the Launcher
+         * never calls an installer or a shell command directly. */
+        (void)snprintf(payload, sizeof(payload),
+            "{\"component\":\"org.msys.settings:software-center\","
+            "\"activation\":{\"action\":\"software-center\",\"name\":\"%s\","
+            "\"component\":\"%s\"}}",
+            action == 0 ? "details" : "uninstall", component);
+        (void)send_async(shell,
+            action == 0 ? PENDING_APP_DETAILS : PENDING_APP_UNINSTALL,
+            app_index, "msys.core", "start", payload, 8000u, 1);
+    } else if (
+        action >= 2 &&
+        (size_t)(action - 2) < shell->apps[app_index].quick_action_count &&
+        msys_native_quick_action_payload(
+            &shell->apps[app_index].quick_actions[action - 2], item->id,
+            payload, sizeof(payload)
+        )
+    ) {
+        (void)send_async(shell, PENDING_APP_QUICK_ACTION, app_index,
+            "msys.core", "activate", payload, 6000u, 1);
+    }
+}
+
 static void activate_task(native_shell *shell, size_t index)
 {
     char payload[MSYS_NATIVE_COMPONENT_CAPACITY * 2u + 32u];
@@ -4591,6 +5002,22 @@ static void send_navigation(native_shell *shell, enum msys_native_navigation_act
     hide_launch_transition(shell);
     if (
         action == MSYS_NATIVE_NAV_BACK &&
+        (shell->launcher_folder_item >= 0 || shell->launcher_editing != 0)
+    ) {
+        shell->launcher_folder_item = -1;
+        shell->launcher_editing = 0;
+        shell->launcher_detail_item = -1;
+        shell->launcher_hover_item = -1;
+        draw_launcher(shell);
+        shell->nav_feedback = 1;
+        shell->nav_feedback_action = action;
+        shell->nav_feedback_until_ms = now_ms() + NAV_FEEDBACK_MS;
+        draw_navigation_action_damage(shell, action);
+        XFlush(shell->display);
+        return;
+    }
+    if (
+        action == MSYS_NATIVE_NAV_BACK &&
         (shell->recents_visible != 0 || shell->controls_visible != 0)
     ) {
         hide_recents(shell, 1);
@@ -4614,6 +5041,11 @@ static void send_navigation(native_shell *shell, enum msys_native_navigation_act
     if (action == MSYS_NATIVE_NAV_HOME) {
         hide_recents(shell, 0);
         hide_controls(shell);
+        shell->launcher_folder_item = -1;
+        shell->launcher_editing = 0;
+        shell->launcher_detail_item = -1;
+        shell->launcher_hover_item = -1;
+        draw_launcher(shell);
     }
     name = action == MSYS_NATIVE_NAV_BACK
         ? "back"
@@ -5056,6 +5488,35 @@ static void handle_call(native_shell *shell, const char *packet)
         }
         return;
     }
+    if (strcmp(method, "rename_launcher_folder") == 0) {
+        char folder[MSYS_NATIVE_LAUNCHER_FOLDER_ID_CAPACITY];
+        char name[MSYS_NATIVE_NAME_CAPACITY];
+        if (
+            msys_mipc_json_get_string(
+                payload, "folder", folder, sizeof(folder), NULL
+            ) != MSYS_MIPC_OK ||
+            msys_mipc_json_get_string(
+                payload, "name", name, sizeof(name), NULL
+            ) != MSYS_MIPC_OK ||
+            !msys_native_launcher_rename_folder(
+                &shell->launcher_items, folder, name
+            )
+        ) {
+            (void)msys_mipc_send_error(
+                &shell->ipc, request_id, "BAD_FOLDER", "unknown folder or invalid name"
+            );
+        } else if (!msys_native_launcher_layout_commit(&shell->launcher_items)) {
+            (void)msys_mipc_send_error(
+                &shell->ipc, request_id, "IO_ERROR", "launcher layout commit failed"
+            );
+        } else {
+            draw_launcher(shell);
+            (void)msys_mipc_send_return_json(
+                &shell->ipc, request_id, "{\"ok\":true}"
+            );
+        }
+        return;
+    }
     if (strcmp(method, "list_recents") == 0) {
         char response[RESPONSE_CAPACITY];
         if (serialize_tasks(shell, response, sizeof(response)) == 0) {
@@ -5373,6 +5834,13 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
         } else if (pending.kind == PENDING_SETTINGS_PANEL) {
             show_toast(shell, tr(shell, "error.settings_unavailable"));
         } else if (
+            pending.kind == PENDING_APP_DETAILS ||
+            pending.kind == PENDING_APP_UNINSTALL
+        ) {
+            show_toast(shell, tr(shell, "error.settings_unavailable"));
+        } else if (pending.kind == PENDING_APP_QUICK_ACTION) {
+            show_toast(shell, tr(shell, "error.activation_failed"));
+        } else if (
             pending.kind == PENDING_WIFI_INVENTORY ||
             pending.kind == PENDING_WIFI_STATE
         ) {
@@ -5411,6 +5879,7 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
             shell->apps_state = shell->app_count == 0u ? CATALOG_EMPTY : CATALOG_READY;
             shell->apps_message[0] = '\0';
             sort_apps(shell);
+            launcher_reconcile(shell, 1);
         }
         draw_launcher(shell);
         if (shell->recents_mapped != 0) {
@@ -5435,6 +5904,13 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
                 shell->apps[pending.index].name
             );
         }
+        break;
+    case PENDING_APP_DETAILS:
+    case PENDING_APP_UNINSTALL:
+    case PENDING_APP_QUICK_ACTION:
+        shell->launcher_editing = 0;
+        shell->launcher_detail_item = -1;
+        draw_launcher(shell);
         break;
     case PENDING_RECENTS_LIST:
         image_caches_dispose(shell->task_previews, MSYS_NATIVE_MAX_TASKS);
@@ -5860,17 +6336,33 @@ static void redraw_launcher_cell(native_shell *shell, size_t index)
 {
     XWindowAttributes attributes;
     msys_native_grid_layout grid;
+    size_t slot;
     int row;
     int column;
     int x;
     int y;
     if (!XGetWindowAttributes(shell->display, shell->launcher, &attributes)) return;
     launcher_grid(shell, attributes.width, attributes.height, &grid);
-    row = (int)index / grid.columns;
-    column = (int)index % grid.columns;
+    if (!launcher_item_slot(shell, index, &slot)) return;
+    row = (int)slot / grid.columns;
+    column = (int)slot % grid.columns;
     x = grid.margin + column * (grid.cell_width + grid.gap);
-    y = grid.top + row * (grid.cell_height + grid.gap) - shell->launcher_scroll;
+    y = grid.top + row * (grid.cell_height + grid.gap);
     begin_clip(shell, x - 2, y - 2, grid.cell_width + 4, grid.cell_height + 4);
+    draw_launcher(shell);
+    end_clip(shell);
+}
+
+static void redraw_launcher_detail(native_shell *shell)
+{
+    XWindowAttributes attributes;
+    msys_native_grid_layout grid;
+    msys_native_launcher_detail_layout detail;
+    if (!XGetWindowAttributes(shell->display, shell->launcher, &attributes)) return;
+    launcher_grid(shell, attributes.width, attributes.height, &grid);
+    msys_native_launcher_detail_compute(&detail, attributes.height);
+    begin_clip(shell, 0, detail.top - 4, attributes.width,
+        attributes.height - detail.top + 4);
     draw_launcher(shell);
     end_clip(shell);
 }
@@ -5929,32 +6421,6 @@ static void end_atomic_presentation(native_shell *shell)
     XSync(shell->display, False);
     XUngrabServer(shell->display);
     XFlush(shell->display);
-}
-
-static int present_launcher_drag_frame(
-    native_shell *shell,
-    uint64_t current,
-    int force
-)
-{
-    XWindowAttributes attributes;
-    msys_native_grid_layout grid;
-    if (!XGetWindowAttributes(shell->display, shell->launcher, &attributes)) return 0;
-    launcher_grid(shell, attributes.width, attributes.height, &grid);
-    if (!msys_native_drag_frame_due(
-        shell->launcher_scroll,
-        shell->launcher_presented_scroll,
-        current,
-        shell->launcher_redraw_at_ms,
-        force
-    )) return 0;
-    begin_atomic_presentation(shell);
-    redraw_launcher_viewport(shell, &attributes, &grid);
-    end_atomic_presentation(shell);
-    shell->launcher_presented_scroll = shell->launcher_scroll;
-    shell->launcher_redraw_pending = 0;
-    shell->launcher_redraw_at_ms = current + DRAG_FRAME_MS;
-    return 1;
 }
 
 static int present_recents_drag_frame(
@@ -7059,17 +7525,21 @@ static void handle_x_event(native_shell *shell, XEvent *event)
     } else if (event->type == ButtonPress && event->xbutton.window == shell->launcher) {
         XWindowAttributes attributes;
         msys_native_grid_layout grid;
-        size_t index;
+        size_t item;
+        size_t slot;
+        size_t folder_app;
         if (!XGetWindowAttributes(shell->display, shell->launcher, &attributes)) return;
         launcher_grid(shell, attributes.width, attributes.height, &grid);
         shell->launcher_pointer_active = 1;
         shell->launcher_dragging = 0;
+        shell->launcher_drag_start_x = event->xbutton.x;
         shell->launcher_drag_start_y = event->xbutton.y;
-        shell->launcher_drag_start_scroll = shell->launcher_scroll;
-        shell->launcher_presented_scroll = shell->launcher_scroll;
-        shell->launcher_redraw_pending = 0;
-        shell->launcher_redraw_at_ms = 0u;
+        shell->launcher_pressed_at_ms = current;
+        shell->launcher_edge_at_ms = 0u;
+        shell->launcher_edge_direction = 0;
         shell->launcher_pressed = -1;
+        shell->launcher_hover_item = -1;
+        shell->launcher_folder_pressed = -1;
         (void)XGrabPointer(
             shell->display,
             shell->launcher,
@@ -7081,16 +7551,19 @@ static void handle_x_event(native_shell *shell, XEvent *event)
             None,
             CurrentTime
         );
-        if (msys_native_grid_hit(
-            event->xbutton.x,
-            event->xbutton.y,
-            shell->launcher_scroll,
-            &grid,
-            shell->app_count,
-            &index
+        if (shell->launcher_folder_item >= 0) {
+            if (launcher_folder_member_at(
+                shell, &grid, attributes.width, event->xbutton.x,
+                event->xbutton.y, &folder_app
+            )) shell->launcher_folder_pressed = (int)folder_app;
+        } else if (shell->launcher_detail_item >= 0 &&
+            event->xbutton.y >= attributes.height - 128) {
+            /* Detail actions are resolved on release. */
+        } else if (launcher_hit_item(
+            shell, event->xbutton.x, event->xbutton.y, &grid, &item, &slot
         )) {
-            shell->launcher_pressed = (int)index;
-            redraw_launcher_cell(shell, index);
+            shell->launcher_pressed = (int)item;
+            redraw_launcher_cell(shell, item);
         }
     } else if (
         event->type == MotionNotify && event->xmotion.window == shell->launcher &&
@@ -7098,74 +7571,189 @@ static void handle_x_event(native_shell *shell, XEvent *event)
     ) {
         XWindowAttributes attributes;
         msys_native_grid_layout grid;
-        int delta = shell->launcher_drag_start_y - event->xmotion.y;
-        if (abs(delta) > 8 && XGetWindowAttributes(shell->display, shell->launcher, &attributes)) {
+        int delta_x = event->xmotion.x - shell->launcher_drag_start_x;
+        int delta_y = event->xmotion.y - shell->launcher_drag_start_y;
+        if (!XGetWindowAttributes(shell->display, shell->launcher, &attributes)) return;
+        launcher_grid(shell, attributes.width, attributes.height, &grid);
+        if (shell->launcher_editing != 0 && shell->launcher_pressed >= 0) {
+            size_t hover;
+            size_t slot;
+            int old_hover = shell->launcher_hover_item;
+            int direction = event->xmotion.x < LAUNCHER_EDGE_PX ? -1 :
+                (event->xmotion.x >= attributes.width - LAUNCHER_EDGE_PX ? 1 : 0);
+            if (direction != shell->launcher_edge_direction) {
+                shell->launcher_edge_direction = direction;
+                shell->launcher_edge_at_ms = direction != 0
+                    ? current + LAUNCHER_EDGE_HOLD_MS : 0u;
+            }
+            shell->launcher_dragging = abs(delta_x) > 6 || abs(delta_y) > 6;
+            if (launcher_hit_item(
+                shell, event->xmotion.x, event->xmotion.y,
+                &grid, &hover, &slot
+            ) && hover != (size_t)shell->launcher_pressed) {
+                shell->launcher_hover_item = (int)hover;
+            } else {
+                shell->launcher_hover_item = -1;
+            }
+            if (old_hover != shell->launcher_hover_item) {
+                if (old_hover >= 0) redraw_launcher_cell(shell, (size_t)old_hover);
+                if (shell->launcher_hover_item >= 0) {
+                    redraw_launcher_cell(shell, (size_t)shell->launcher_hover_item);
+                }
+            }
+        } else if (
+            shell->launcher_folder_item < 0 &&
+            (abs(delta_x) > 10 || abs(delta_y) > 10)
+        ) {
             int old_pressed = shell->launcher_pressed;
-            int starting_drag = shell->launcher_dragging == 0;
-            int new_scroll;
-            launcher_grid(shell, attributes.width, attributes.height, &grid);
             shell->launcher_dragging = 1;
             shell->launcher_pressed = -1;
-            if (starting_drag != 0 && old_pressed >= 0) {
-                /* The content does not move until release, so clear pressed
-                 * feedback once while its old coordinates are authoritative. */
-                redraw_launcher_cell(shell, (size_t)old_pressed);
-            }
-            new_scroll = msys_native_scroll_clamp(
-                shell->launcher_drag_start_scroll + delta,
-                grid.content_height,
-                grid.viewport_height
-            );
-            shell->launcher_scroll = new_scroll;
-            if (new_scroll == shell->launcher_presented_scroll) {
-                shell->launcher_redraw_pending = 0;
-            } else if (present_launcher_drag_frame(shell, current, 0) == 0) {
-                shell->launcher_redraw_pending = 1;
-            }
+            if (old_pressed >= 0) redraw_launcher_cell(shell, (size_t)old_pressed);
         }
     } else if (event->type == ButtonRelease && event->xbutton.window == shell->launcher) {
         XWindowAttributes attributes;
         msys_native_grid_layout grid;
-        size_t released_index;
+        size_t released_item = 0u;
+        size_t released_slot = 0u;
         int pressed = shell->launcher_pressed;
-        int same = 0;
+        int delta_x = event->xbutton.x - shell->launcher_drag_start_x;
         XUngrabPointer(shell->display, CurrentTime);
         if (!XGetWindowAttributes(shell->display, shell->launcher, &attributes)) {
             shell->launcher_pressed = -1;
             shell->launcher_pointer_active = 0;
             shell->launcher_dragging = 0;
-            shell->launcher_presented_scroll = shell->launcher_scroll;
-            shell->launcher_redraw_pending = 0;
-            shell->launcher_redraw_at_ms = 0u;
             return;
         }
         launcher_grid(shell, attributes.width, attributes.height, &grid);
-        same = msys_native_grid_hit(
-            event->xbutton.x,
-            event->xbutton.y,
-            shell->launcher_scroll,
-            &grid,
-            shell->app_count,
-            &released_index
-        ) && pressed >= 0 && released_index == (size_t)pressed;
-        shell->launcher_pressed = -1;
-        shell->launcher_pointer_active = 0;
-        if (shell->launcher_dragging != 0) {
-            shell->launcher_dragging = 0;
-            /* Motion is rate-limited; release presents only a final position
-             * which has not already reached the visible viewport. */
-            if (shell->launcher_scroll != shell->launcher_presented_scroll) {
-                (void)present_launcher_drag_frame(shell, current, 1);
+        if (shell->launcher_folder_item >= 0) {
+            size_t app_index;
+            if (shell->launcher_folder_pressed >= 0 && launcher_folder_member_at(
+                shell, &grid, attributes.width, event->xbutton.x,
+                event->xbutton.y, &app_index
+            ) && app_index == (size_t)shell->launcher_folder_pressed) {
+                shell->launcher_folder_item = -1;
+                draw_launcher(shell);
+                activate_app(shell, app_index);
+            } else {
+                shell->launcher_folder_item = -1;
+                draw_launcher(shell);
             }
-        } else if (same != 0) {
+        } else if (shell->launcher_detail_item >= 0 &&
+            event->xbutton.y >= attributes.height - 128) {
+            size_t app_index = shell->app_count;
+            size_t quick_count = 0u;
+            const msys_native_launcher_item *detail_item =
+                &shell->launcher_items.items[shell->launcher_detail_item];
+            int action;
+            if (detail_item->kind == MSYS_NATIVE_LAUNCHER_APP &&
+                launcher_app_index(shell, detail_item->id, &app_index)) {
+                quick_count = shell->apps[app_index].quick_action_count;
+            }
+            action = msys_native_launcher_detail_hit(
+                event->xbutton.x, event->xbutton.y,
+                attributes.width, attributes.height, quick_count
+            );
+            if (action >= 0) launcher_app_action(shell, action);
+        } else if (shell->launcher_editing != 0 && pressed >= 0) {
+            int hit = launcher_hit_item(
+                shell, event->xbutton.x, event->xbutton.y, &grid,
+                &released_item, &released_slot
+            );
+            if (shell->launcher_dragging != 0 && hit != 0 &&
+                released_item != (size_t)pressed) {
+                int row = (int)released_slot / grid.columns;
+                int column = (int)released_slot % grid.columns;
+                int cell_x = grid.margin + column * (grid.cell_width + grid.gap);
+                int cell_y = grid.top + row * (grid.cell_height + grid.gap);
+                int centre_drop = event->xbutton.x > cell_x + grid.cell_width / 5 &&
+                    event->xbutton.x < cell_x + grid.cell_width * 4 / 5 &&
+                    event->xbutton.y > cell_y + grid.cell_height / 5 &&
+                    event->xbutton.y < cell_y + grid.cell_height * 4 / 5;
+                size_t new_index = (size_t)pressed;
+                int changed = 0;
+                int full_repaint = 0;
+                if (centre_drop != 0 &&
+                    shell->launcher_items.items[released_item].kind ==
+                        MSYS_NATIVE_LAUNCHER_FOLDER) {
+                    changed = msys_native_launcher_add_to_folder(
+                        &shell->launcher_items, (size_t)pressed, released_item,
+                        (size_t)grid.page_capacity, &new_index
+                    );
+                    full_repaint = changed;
+                } else if (centre_drop != 0) {
+                    changed = msys_native_launcher_make_folder(
+                        &shell->launcher_items, (size_t)pressed, released_item,
+                        tr(shell, "launcher.new_folder"),
+                        (size_t)grid.page_capacity, &new_index
+                    );
+                    full_repaint = changed;
+                } else {
+                    changed = msys_native_launcher_swap(
+                        &shell->launcher_items, (size_t)pressed, released_item
+                    );
+                    new_index = released_item;
+                }
+                if (changed != 0) {
+                    shell->launcher_layout_dirty = 1;
+                    shell->launcher_detail_item = (int)new_index;
+                    shell->launcher_pressed = (int)new_index;
+                    if (full_repaint != 0) {
+                        begin_atomic_presentation(shell);
+                        redraw_launcher_viewport(shell, &attributes, &grid);
+                        end_atomic_presentation(shell);
+                    } else {
+                        redraw_launcher_cell(shell, (size_t)pressed);
+                        redraw_launcher_cell(shell, released_item);
+                    }
+                }
+            } else if (hit == 0 && shell->launcher_dragging == 0) {
+                shell->launcher_editing = 0;
+                shell->launcher_detail_item = -1;
+                draw_launcher(shell);
+            }
+        } else if (shell->launcher_dragging != 0) {
+            unsigned int pages = msys_native_launcher_page_count(&shell->launcher_items);
+            unsigned int old_page = shell->launcher_page;
+            if (delta_x <= -attributes.width / 5 && shell->launcher_page + 1u < pages) {
+                shell->launcher_page++;
+            } else if (delta_x >= attributes.width / 5 && shell->launcher_page > 0u) {
+                shell->launcher_page--;
+            }
+            if (old_page != shell->launcher_page) {
+                begin_atomic_presentation(shell);
+                redraw_launcher_viewport(shell, &attributes, &grid);
+                end_atomic_presentation(shell);
+            }
+        } else if (pressed >= 0 && launcher_hit_item(
+            shell, event->xbutton.x, event->xbutton.y, &grid,
+            &released_item, &released_slot
+        ) && released_item == (size_t)pressed) {
+            const msys_native_launcher_item *item =
+                &shell->launcher_items.items[released_item];
             shell->launcher_pulse = pressed;
             shell->launcher_pulse_until_ms = current + TRANSITION_PULSE_MS;
             redraw_launcher_cell(shell, (size_t)pressed);
-            activate_app(shell, (size_t)pressed);
+            if (item->kind == MSYS_NATIVE_LAUNCHER_FOLDER) {
+                shell->launcher_folder_item = pressed;
+                shell->launcher_pulse = -1;
+                draw_launcher(shell);
+            } else {
+                activate_launcher_component(shell, item->id);
+            }
         }
-        shell->launcher_presented_scroll = shell->launcher_scroll;
-        shell->launcher_redraw_pending = 0;
-        shell->launcher_redraw_at_ms = 0u;
+        shell->launcher_pressed = -1;
+        shell->launcher_hover_item = -1;
+        shell->launcher_folder_pressed = -1;
+        shell->launcher_pointer_active = 0;
+        shell->launcher_dragging = 0;
+        shell->launcher_edge_at_ms = 0u;
+        shell->launcher_edge_direction = 0;
+        if (shell->launcher_layout_dirty != 0) {
+            if (!msys_native_launcher_layout_commit(&shell->launcher_items)) {
+                show_toast(shell, tr(shell, "error.launcher_layout_save"));
+            }
+            shell->launcher_layout_dirty = 0;
+        }
     } else if (
         event->type == ButtonRelease && shell->chrome_pressed_action != 0
     ) {
@@ -7290,10 +7878,56 @@ static void periodic(native_shell *shell)
     }
     if (
         shell->launcher_pointer_active != 0 &&
-        shell->launcher_redraw_pending != 0 &&
-        present_launcher_drag_frame(shell, current, 0) != 0
+        shell->launcher_editing == 0 &&
+        shell->launcher_dragging == 0 &&
+        shell->launcher_pressed >= 0 &&
+        current >= shell->launcher_pressed_at_ms + LAUNCHER_LONG_PRESS_MS
     ) {
+        shell->launcher_editing = 1;
+        shell->launcher_detail_item = shell->launcher_pressed;
+        redraw_launcher_cell(shell, (size_t)shell->launcher_pressed);
+        redraw_launcher_detail(shell);
         visual_change = 1;
+    }
+    if (
+        shell->launcher_pointer_active != 0 &&
+        shell->launcher_editing != 0 &&
+        shell->launcher_pressed >= 0 &&
+        shell->launcher_edge_direction != 0 &&
+        shell->launcher_edge_at_ms != 0u &&
+        current >= shell->launcher_edge_at_ms
+    ) {
+        XWindowAttributes attributes;
+        msys_native_grid_layout grid;
+        if (XGetWindowAttributes(shell->display, shell->launcher, &attributes)) {
+            unsigned int pages = msys_native_launcher_page_count(&shell->launcher_items);
+            unsigned int target = shell->launcher_page;
+            size_t new_index = (size_t)shell->launcher_pressed;
+            if (shell->launcher_edge_direction < 0 && target > 0u) target--;
+            else if (shell->launcher_edge_direction > 0) {
+                target = target + 1u < pages ? target + 1u : pages;
+            }
+            launcher_grid(shell, attributes.width, attributes.height, &grid);
+            if (target != shell->launcher_page && msys_native_launcher_move(
+                &shell->launcher_items, (size_t)shell->launcher_pressed,
+                target,
+                msys_native_launcher_page_items(
+                    &shell->launcher_items, target, NULL, 0u
+                ),
+                (size_t)grid.page_capacity, &new_index
+            )) {
+                shell->launcher_page = shell->launcher_items.items[new_index].page;
+                shell->launcher_pressed = (int)new_index;
+                shell->launcher_detail_item = (int)new_index;
+                shell->launcher_layout_dirty = 1;
+                begin_atomic_presentation(shell);
+                redraw_launcher_viewport(shell, &attributes, &grid);
+                end_atomic_presentation(shell);
+                visual_change = 1;
+            }
+        }
+        shell->launcher_edge_direction = 0;
+        shell->launcher_edge_at_ms = 0u;
     }
     if (
         shell->recents_pointer_active != 0 &&
@@ -7413,7 +8047,7 @@ static void periodic(native_shell *shell)
         size_t index = (size_t)shell->launcher_pulse;
         shell->launcher_pulse = -1;
         shell->launcher_pulse_until_ms = 0u;
-        if (index < shell->app_count) {
+        if (index < shell->launcher_items.count) {
             redraw_launcher_cell(shell, index);
             visual_change = 1;
         }
@@ -7510,6 +8144,15 @@ static void periodic(native_shell *shell)
             show_toast(shell, tr(shell, "error.settings_unavailable"));
             visual_change = 1;
         } else if (
+            expired.kind == PENDING_APP_DETAILS ||
+            expired.kind == PENDING_APP_UNINSTALL
+        ) {
+            show_toast(shell, tr(shell, "error.settings_unavailable"));
+            visual_change = 1;
+        } else if (expired.kind == PENDING_APP_QUICK_ACTION) {
+            show_toast(shell, tr(shell, "error.activation_failed"));
+            visual_change = 1;
+        } else if (
             expired.kind == PENDING_WIFI_INVENTORY ||
             expired.kind == PENDING_WIFI_STATE
         ) {
@@ -7602,6 +8245,7 @@ static void shutdown_shell(native_shell *shell)
     }
     image_caches_dispose(shell->app_icons, MSYS_NATIVE_MAX_APPS);
     image_caches_dispose(shell->task_previews, MSYS_NATIVE_MAX_TASKS);
+    image_cache_dispose(&shell->wallpaper);
     if (shell->chrome_clock_buffer != None) {
         XFreePixmap(shell->display, shell->chrome_clock_buffer);
         shell->chrome_clock_buffer = None;
@@ -7621,10 +8265,15 @@ int main(int argc, char **argv)
 {
     native_shell shell;
     const char *mode = getenv("MSYS_NATIVE_NAV_MODE");
+    const char *state_directory;
     enum msys_native_preferences_result preference_result;
     memset(&shell, 0, sizeof(shell));
     shell.launcher_pressed = -1;
     shell.launcher_pulse = -1;
+    shell.launcher_detail_item = -1;
+    shell.launcher_hover_item = -1;
+    shell.launcher_folder_item = -1;
+    shell.launcher_folder_pressed = -1;
     shell.recents_pressed = -1;
     shell.recents_pulse = -1;
     shell.controls_pressed = -1;
@@ -7647,6 +8296,21 @@ int main(int argc, char **argv)
         preference_result != MSYS_NATIVE_PREFERENCES_NO_STATE_DIR
     ) {
         fprintf(stderr, "msys-shell-native: invalid preference state; using defaults\n");
+    }
+    state_directory = getenv("MSYS_COMPONENT_STATE_DIR");
+    if (state_directory == NULL || *state_directory == '\0') {
+        state_directory = getenv("MSYS_APP_STATE_DIR");
+    }
+    if (!msys_native_launcher_layout_load(&shell.launcher_items, state_directory)) {
+        fprintf(stderr, "msys-shell-native: invalid launcher layout; rebuilding from catalog\n");
+        msys_native_launcher_layout_init(&shell.launcher_items);
+        if (state_directory != NULL && state_directory[0] == '/') {
+            (void)snprintf(
+                shell.launcher_items.path,
+                sizeof(shell.launcher_items.path),
+                "%s/launcher-layout.v1", state_directory
+            );
+        }
     }
     shell.next_request_id = 1000u;
     shell.buttons_mode = mode != NULL && strcmp(mode, "buttons") == 0;

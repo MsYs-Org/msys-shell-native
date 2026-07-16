@@ -3,10 +3,10 @@
   "package": {
     "id": "org.msys.shell.native",
     "name": "MSYS Native Shell",
-    "version": "0.3.26",
+    "version": "0.4.0",
     "kind": "system",
     "vendor": "MSYS",
-    "summary": "Lean adaptive Xlib shell with app icons and task previews",
+    "summary": "Lean paged Xlib shell with folders, wallpaper and task previews",
     "x-msys-i18n": {
       "catalog": "files/share/i18n/catalog.json",
       "name_key": "package.name",

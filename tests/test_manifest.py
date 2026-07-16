@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.26")
+        self.assertEqual(self.document["package"]["version"], "0.4.0")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.26"', implementation)
+        self.assertIn('#define APP_VERSION "0.4.0"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -100,7 +100,7 @@ class NativeShellManifestTests(unittest.TestCase):
         )
         self.assertEqual(
             catalog["messages"]["zh"]["package.summary"],
-            "带实时应用与任务预览的轻量自适应 X11 桌面",
+            "支持分页、文件夹、壁纸与任务预览的轻量 X11 桌面",
         )
         self.assertEqual(
             catalog["messages"]["zh"]["warning.display_session_rebuilt"],
@@ -314,7 +314,7 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("present_recents_drag_frame(shell, current, 0)", recents_motion)
         self.assertNotIn("redraw_recents_viewport", recents_motion)
         self.assertIn("redraw_launcher_cell", launcher_motion)
-        self.assertIn("present_launcher_drag_frame(shell, current, 0)", launcher_motion)
+        self.assertIn("launcher_edge_at_ms", launcher_motion)
         self.assertNotIn("redraw_launcher_viewport", launcher_motion)
         self.assertIn("#define DRAG_FRAME_MS 80u", implementation)
         recents_press = implementation[
@@ -359,14 +359,14 @@ class NativeShellManifestTests(unittest.TestCase):
             ):
             implementation.index("event->type == ButtonRelease && shell->chrome_pressed_action")
         ]
-        self.assertIn("shell->launcher_scroll != shell->launcher_presented_scroll", launcher_release)
-        self.assertIn("present_launcher_drag_frame(shell, current, 1)", launcher_release)
+        self.assertIn("redraw_launcher_viewport", launcher_release)
+        self.assertIn("begin_atomic_presentation(shell)", launcher_release)
         periodic = implementation[
             implementation.index("static void periodic"):
             implementation.index("static int event_loop")
         ]
-        self.assertIn("shell->launcher_redraw_pending != 0", periodic)
-        self.assertIn("present_launcher_drag_frame(shell, current, 0)", periodic)
+        self.assertIn("LAUNCHER_LONG_PRESS_MS", periodic)
+        self.assertIn("msys_native_launcher_move", periodic)
         self.assertIn("shell->recents_redraw_pending != 0", periodic)
         self.assertIn("present_recents_drag_frame(shell, current, 0)", periodic)
         runtime_probe = (ROOT / "tests" / "runtime_probe.py").read_text(encoding="utf-8")
@@ -476,6 +476,14 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("begin_clip(shell, x, 0, width, attributes.height)", damage)
         self.assertNotIn("XClearWindow", damage)
         self.assertNotIn("/sys/", implementation)
+
+    def test_launcher_actions_use_real_core_and_software_center_contracts(self) -> None:
+        implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
+        self.assertIn("org.msys.settings:software-center", implementation)
+        self.assertIn('"msys.core", "activate"', implementation)
+        self.assertIn("msys_native_quick_action_payload", implementation)
+        self.assertNotIn('"role:install-manager"', implementation)
+        self.assertNotIn('"role:settings"', implementation)
 
 
 if __name__ == "__main__":

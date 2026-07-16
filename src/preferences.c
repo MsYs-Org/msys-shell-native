@@ -26,7 +26,12 @@ enum preference_field {
     FIELD_ICON_SIZE = 1u << 3,
     FIELD_SHOW_LABELS = 1u << 4,
     FIELD_SORT = 1u << 5,
-    FIELD_ALL = (1u << 6) - 1u
+    FIELD_WALLPAPER_PATH = 1u << 6,
+    FIELD_GRID_COLUMNS = 1u << 7,
+    FIELD_GRID_ROWS = 1u << 8,
+    FIELD_ACRYLIC = 1u << 9,
+    FIELD_REQUIRED_V1 = (1u << 6) - 1u,
+    FIELD_ALL = (1u << 10) - 1u
 };
 
 static void skip_space(json_cursor *cursor)
@@ -179,6 +184,10 @@ static unsigned field_bit(const char *name)
     if (strcmp(name, "icon_size") == 0) return FIELD_ICON_SIZE;
     if (strcmp(name, "show_labels") == 0) return FIELD_SHOW_LABELS;
     if (strcmp(name, "sort") == 0) return FIELD_SORT;
+    if (strcmp(name, "wallpaper_path") == 0) return FIELD_WALLPAPER_PATH;
+    if (strcmp(name, "grid_columns") == 0) return FIELD_GRID_COLUMNS;
+    if (strcmp(name, "grid_rows") == 0) return FIELD_GRID_ROWS;
+    if (strcmp(name, "acrylic") == 0) return FIELD_ACRYLIC;
     return 0u;
 }
 
@@ -187,6 +196,22 @@ static int valid_layout(const char *value)
     return strcmp(value, "profile") == 0 || strcmp(value, "auto") == 0 ||
         strcmp(value, "mobile") == 0 || strcmp(value, "desktop") == 0 ||
         strcmp(value, "kiosk") == 0 || strcmp(value, "embedded") == 0;
+}
+
+static int valid_wallpaper_path(const char *value)
+{
+    const unsigned char *cursor = (const unsigned char *)value;
+    if (*cursor == '\0') return 1;
+    if (*cursor != '/') return 0;
+    while (*cursor != '\0') {
+        /* Keep persisted JSON dependency-free by accepting paths which do not
+         * need string escaping. Spaces and UTF-8 remain valid. */
+        if (*cursor < 0x20u || *cursor == 0x7fu || *cursor == '"' || *cursor == '\\') {
+            return 0;
+        }
+        cursor++;
+    }
+    return 1;
 }
 
 static enum msys_native_preferences_result parse_preferences_object(
@@ -227,14 +252,34 @@ static enum msys_native_preferences_result parse_preferences_object(
             if (!json_string(cursor, target, 8u) || !valid_color(target)) {
                 return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
             }
+        } else if (bit == FIELD_WALLPAPER_PATH) {
+            if (!json_string(
+                cursor,
+                preferences->wallpaper_path,
+                sizeof(preferences->wallpaper_path)
+            ) || !valid_wallpaper_path(preferences->wallpaper_path)) {
+                return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
+            }
         } else if (bit == FIELD_ICON_SIZE) {
             uint64_t value;
             if (!json_u64(cursor, &value) || value < 40u || value > 96u) {
                 return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
             }
             preferences->icon_size = (int)value;
+        } else if (bit == FIELD_GRID_COLUMNS || bit == FIELD_GRID_ROWS) {
+            uint64_t value;
+            uint64_t maximum = bit == FIELD_GRID_COLUMNS ? 8u : 6u;
+            if (!json_u64(cursor, &value) || value > maximum) {
+                return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
+            }
+            if (bit == FIELD_GRID_COLUMNS) preferences->grid_columns = (int)value;
+            else preferences->grid_rows = (int)value;
         } else if (bit == FIELD_SHOW_LABELS) {
             if (!json_boolean(cursor, &preferences->show_labels)) {
+                return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
+            }
+        } else if (bit == FIELD_ACRYLIC) {
+            if (!json_boolean(cursor, &preferences->acrylic)) {
                 return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
             }
         } else {
@@ -253,7 +298,10 @@ static enum msys_native_preferences_result parse_preferences_object(
             return MSYS_NATIVE_PREFERENCES_BAD_REQUEST;
         }
     }
-    if ((complete != 0 && seen != FIELD_ALL) || (complete == 0 && seen == 0u)) {
+    if (
+        (complete != 0 && (seen & FIELD_REQUIRED_V1) != FIELD_REQUIRED_V1) ||
+        (complete == 0 && seen == 0u)
+    ) {
         return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
     }
     *fields = seen;
@@ -265,9 +313,13 @@ void msys_native_preferences_defaults(msys_native_preferences *preferences)
     memset(preferences, 0, sizeof(*preferences));
     (void)snprintf(preferences->layout, sizeof(preferences->layout), "profile");
     (void)snprintf(preferences->wallpaper_color, sizeof(preferences->wallpaper_color), "#F4F6FA");
+    preferences->wallpaper_path[0] = '\0';
     (void)snprintf(preferences->accent_color, sizeof(preferences->accent_color), "#6750A4");
     preferences->icon_size = 64;
+    preferences->grid_columns = 0;
+    preferences->grid_rows = 0;
     preferences->show_labels = 1;
+    preferences->acrylic = 0;
     (void)snprintf(preferences->sort, sizeof(preferences->sort), "name");
 }
 
@@ -352,14 +404,18 @@ static int state_json(
         output,
         capacity,
         event != 0
-            ? "{\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"show_labels\":%s,\"sort\":\"%s\"}%s}"
-            : "{\"schema\":\"msys.shell-preferences.v1\",\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"show_labels\":%s,\"sort\":\"%s\"}%s}",
+            ? "{\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"wallpaper_path\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"grid_columns\":%d,\"grid_rows\":%d,\"show_labels\":%s,\"acrylic\":%s,\"sort\":\"%s\"}%s}"
+            : "{\"schema\":\"msys.shell-preferences.v1\",\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"wallpaper_path\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"grid_columns\":%d,\"grid_rows\":%d,\"show_labels\":%s,\"acrylic\":%s,\"sort\":\"%s\"}%s}",
         (unsigned long long)preferences->revision,
         preferences->layout,
         preferences->wallpaper_color,
+        preferences->wallpaper_path,
         preferences->accent_color,
         preferences->icon_size,
+        preferences->grid_columns,
+        preferences->grid_rows,
         preferences->show_labels != 0 ? "true" : "false",
+        preferences->acrylic != 0 ? "true" : "false",
         preferences->sort,
         event != 0 && reset != 0 ? ",\"reset\":true" : ""
     );

@@ -58,6 +58,10 @@ typedef struct msys_native_grid_layout {
     int cell_width;
     int cell_height;
     int icon_size;
+    int rows;
+    int page_capacity;
+    int page_count;
+    int indicator_y;
     int viewport_height;
     int content_height;
 } msys_native_grid_layout;
@@ -84,6 +88,14 @@ typedef struct msys_native_process_layout {
     int viewport_height;
     int content_height;
 } msys_native_process_layout;
+
+typedef struct msys_native_launcher_detail_layout {
+    int top;
+    int primary_top;
+    int primary_height;
+    int quick_top;
+    int quick_height;
+} msys_native_launcher_detail_layout;
 
 void msys_native_gesture_begin(
     msys_native_gesture *gesture,
@@ -167,6 +179,18 @@ void msys_native_grid_compute(
     size_t item_count
 );
 
+/* Mobile launcher grid with bounded explicit/automatic rows and columns. */
+void msys_native_launcher_grid_compute(
+    msys_native_grid_layout *grid,
+    enum msys_native_shell_profile profile,
+    int width,
+    int height,
+    int requested_icon_size,
+    int requested_columns,
+    int requested_rows,
+    size_t item_count
+);
+
 void msys_native_recents_compute(
     msys_native_recents_layout *layout,
     enum msys_native_shell_profile profile,
@@ -206,6 +230,20 @@ int msys_native_grid_hit(
     const msys_native_grid_layout *grid,
     size_t item_count,
     size_t *index
+);
+
+void msys_native_launcher_detail_compute(
+    msys_native_launcher_detail_layout *layout,
+    int height
+);
+
+/* 0=details, 1=uninstall, 2..4=catalog quick actions, -1=no action. */
+int msys_native_launcher_detail_hit(
+    int x,
+    int y,
+    int width,
+    int height,
+    size_t quick_action_count
 );
 
 int msys_native_recents_hit(

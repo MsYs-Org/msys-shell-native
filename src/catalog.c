@@ -219,6 +219,41 @@ static void parse_icon_path(const char *object, msys_native_app *item)
     }
 }
 
+static void parse_quick_actions(const char *object, msys_native_app *item)
+{
+    const char *array = NULL;
+    size_t length = 0u;
+    size_t offset = 0u;
+    item->quick_action_count = 0u;
+    if (
+        msys_mipc_json_get_raw(object, "quick_actions", &array, &length) !=
+        MSYS_MIPC_OK
+    ) return;
+    while (item->quick_action_count < MSYS_NATIVE_MAX_QUICK_ACTIONS) {
+        const char *raw = NULL;
+        size_t raw_length = 0u;
+        char action[OBJECT_CAPACITY];
+        msys_native_quick_action value;
+        int next = next_object(array, length, &offset, &raw, &raw_length);
+        if (next <= 0) return;
+        memset(&value, 0, sizeof(value));
+        if (
+            !copy_object(raw, raw_length, action) ||
+            !get_optional_string(action, "id", value.id, sizeof(value.id)) ||
+            !get_optional_string(action, "label", value.label, sizeof(value.label)) ||
+            !get_optional_string(action, "action", value.action, sizeof(value.action)) ||
+            value.id[0] == '\0' || value.label[0] == '\0'
+        ) continue;
+        /* Accept the first-phase short-form alias while persisting and
+         * dispatching only Core's real `action` field. */
+        if (value.action[0] == '\0' && !get_optional_string(
+            action, "intent", value.action, sizeof(value.action)
+        )) continue;
+        if (value.action[0] == '\0') continue;
+        item->quick_actions[item->quick_action_count++] = value;
+    }
+}
+
 int msys_native_parse_apps(
     const char *payload,
     msys_native_app *items,
@@ -270,7 +305,8 @@ int msys_native_parse_apps(
         }
         if (
             get_optional_string(object, "name", item.name, sizeof(item.name)) == 0 ||
-            get_optional_string(object, "summary", item.summary, sizeof(item.summary)) == 0
+            get_optional_string(object, "summary", item.summary, sizeof(item.summary)) == 0 ||
+            get_optional_string(object, "version", item.version, sizeof(item.version)) == 0
         ) {
             continue;
         }
@@ -289,7 +325,13 @@ int msys_native_parse_apps(
         if (item.name[0] == '\0') {
             copy_truncated(item.name, sizeof(item.name), item.component);
         }
+        if (item.version[0] == '\0') {
+            (void)get_optional_string(
+                object, "package_version", item.version, sizeof(item.version)
+            );
+        }
         parse_icon_path(object, &item);
+        parse_quick_actions(object, &item);
         items[used++] = item;
     }
     *count = used;
@@ -893,4 +935,26 @@ int msys_native_json_escape(
     }
     output[used] = '\0';
     return 1;
+}
+
+int msys_native_quick_action_payload(
+    const msys_native_quick_action *action,
+    const char *component,
+    char *output,
+    size_t capacity
+)
+{
+    char escaped_action[MSYS_NATIVE_INTENT_CAPACITY * 2u];
+    char escaped_component[MSYS_NATIVE_COMPONENT_CAPACITY * 2u];
+    int written;
+    if (
+        action == NULL || action->action[0] == '\0' || component == NULL ||
+        strchr(component, ':') == NULL || output == NULL || capacity == 0u ||
+        !msys_native_json_escape(action->action, escaped_action, sizeof(escaped_action)) ||
+        !msys_native_json_escape(component, escaped_component, sizeof(escaped_component))
+    ) return 0;
+    written = snprintf(output, capacity,
+        "{\"action\":\"%s\",\"component\":\"%s\"}",
+        escaped_action, escaped_component);
+    return written >= 0 && (size_t)written < capacity;
 }

@@ -1,6 +1,31 @@
 # MSYS Native Shell
 
-Current source version: `0.3.26`.
+Current source version: `0.4.0`.
+
+Version 0.4.0 replaces the mobile Launcher's unbounded vertical application
+list with fixed-capacity horizontal pages. `grid_columns`, `grid_rows`, and
+`icon_size` may be automatic or explicitly bounded through the existing
+preference RPC. A page indicator changes only with the selected page; a
+stationary Home surface has no Launcher timer or damage.
+
+Long-press enters edit mode with bounded cell feedback and an application
+detail sheet. Dragging to a cell reorders it, a centred drop creates or fills a
+folder, and holding at an edge moves it to the adjacent or a new page. Empty
+pages are compacted. Order and folders are stored in a fixed-size,
+percent-escaped state file which is fsync'd and atomically renamed. Folders
+show up to four member icons on Home and open a bounded member grid; their
+UTF-8 names are editable through `rename_launcher_folder`. Details and
+Uninstall launch `org.msys.settings:software-center`, where destructive
+confirmation and the real install-agent contract live. Catalog quick actions
+are capped at three and forwarded only as a real `msys.core.activate` intent;
+undeclared actions never appear.
+
+`wallpaper_path` accepts a bounded absolute P6 PPM path. It is decoded and
+antialiased once into the existing in-process XImage cache for the current
+surface size; `wallpaper_color` remains the fallback. `acrylic=true` is a
+low-memory contract for a pre-blurred wallpaper plus static rounded surface
+tint, never live blur. Application images receive rounded-corner treatment
+without a compositor or persistent mask allocation.
 
 Version 0.3.26 keeps normal Recents limited to real application windows while
 its separate background-process page requests the bounded `all-msys` process
@@ -74,8 +99,11 @@ stays with the integrating MSYS configuration.
 
 One supervised component creates several independently identified X11 windows:
 
-- Material-like icon grid backed by the authoritative Core application inventory,
-  with scrolling and package PPM icon declarations;
+The launcher remains backed by the authoritative Core application inventory.
+
+- Material-like, horizontally paged icon grid backed by the authoritative Core
+  application inventory, with folders, atomic ordering, rounded package PPM
+  icons, and bounded mobile grid preferences;
 - local-time system chrome with seconds, a notification-center entry on the
   left, and an adaptive quick-controls entry on the right; a text-free Wi-Fi
   glyph beside quick controls follows `role:hal-manager` state and
@@ -140,11 +168,11 @@ asynchronous Core call. It reuses the launcher's cached icon and localized app
 name, renders at most four 90ms pulse frames, then remains static until Core
 reports ready/failure or the bounded request expires. It is not a replaceable
 `transition-presenter` role provider. `MSYS_NATIVE_REDUCED_MOTION=1` collapses
-finite shell animations to their first frame. Launcher and Overview content
-follows drag motion through atomic, rate-limited viewport frames: the first
-changed position is immediate, queued motion collapses to the latest position
-at an 80ms cadence, and release paints only an unpresented final position. A
-clamped drag performs no viewport damage. This avoids clear/content
+finite shell animations to their first frame. Overview content follows drag
+motion through atomic, rate-limited viewport frames. Launcher page swipes keep
+the current cached page stable during motion and atomically commit one adjacent
+page on release; edit-mode hover changes only the old/new cells. A clamped drag
+performs no viewport damage. This avoids clear/content
 intermediate frames and unbounded MotionNotify repaint bursts without changing
 the CH347 dirty-box implementation.
 

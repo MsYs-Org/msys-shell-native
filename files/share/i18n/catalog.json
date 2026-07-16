@@ -7,13 +7,17 @@
   "messages": {
     "en-US": {
       "package.name": "MSYS Native Shell",
-      "package.summary": "Lean adaptive X11 shell with live apps and task previews",
+      "package.summary": "Lean paged X11 shell with folders, wallpaper and task previews",
       "launcher.title": "Apps",
       "launcher.loading": "Loading applications…",
       "launcher.unavailable": "Applications unavailable",
       "launcher.empty": "No launchable applications",
       "launcher.started": "Started",
       "launcher.starting": "Starting",
+      "launcher.new_folder": "New folder",
+      "launcher.folder_items": "items",
+      "launcher.details": "Details",
+      "launcher.uninstall": "Uninstall",
       "profile.embedded": "Embedded",
       "profile.mobile": "Mobile",
       "profile.desktop": "Desktop",
@@ -84,17 +88,22 @@
       "error.busy": "Please try again",
       "error.activation_failed": "Task activation failed",
       "error.app_activation_failed": "Application window activation failed",
-      "error.close_failed": "Task close was rejected"
+      "error.close_failed": "Task close was rejected",
+      "error.launcher_layout_save": "Could not save the Home layout"
     },
     "zh": {
       "package.name": "MSYS 原生桌面",
-      "package.summary": "带实时应用与任务预览的轻量自适应 X11 桌面",
+      "package.summary": "支持分页、文件夹、壁纸与任务预览的轻量 X11 桌面",
       "launcher.title": "应用",
       "launcher.loading": "正在读取应用…",
       "launcher.unavailable": "应用列表不可用",
       "launcher.empty": "没有可启动应用",
       "launcher.started": "已启动",
       "launcher.starting": "正在启动",
+      "launcher.new_folder": "新建文件夹",
+      "launcher.folder_items": "个项目",
+      "launcher.details": "详细信息",
+      "launcher.uninstall": "卸载",
       "profile.embedded": "嵌入式",
       "profile.mobile": "手机",
       "profile.desktop": "桌面",
@@ -165,7 +174,8 @@
       "error.busy": "请稍后重试",
       "error.activation_failed": "任务切换失败",
       "error.app_activation_failed": "应用窗口启动失败",
-      "error.close_failed": "任务关闭被拒绝"
+      "error.close_failed": "任务关闭被拒绝",
+      "error.launcher_layout_save": "无法保存桌面布局"
     }
   }
 }

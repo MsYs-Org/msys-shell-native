@@ -43,6 +43,9 @@ int main(void)
         message, "\xe6\x8c\x89\xe9\x9c\x80"
     ) == 0);
     CHECK(strcmp(msys_i18n_lookup(&shell_catalog, "C", "launcher.title"), "Apps") == 0);
+    CHECK(strcmp(msys_i18n_lookup(
+        &shell_catalog, "zh-CN", "launcher.new_folder"
+    ), "新建文件夹") == 0);
     puts("native shell i18n tests passed");
     return 0;
 }

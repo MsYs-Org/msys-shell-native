@@ -18,12 +18,25 @@ extern "C" {
 #define MSYS_NATIVE_IDENTITY_CAPACITY 161u
 #define MSYS_NATIVE_PATH_CAPACITY 1024u
 #define MSYS_NATIVE_WINDOW_META_CAPACITY 48u
+#define MSYS_NATIVE_VERSION_CAPACITY 33u
+#define MSYS_NATIVE_MAX_QUICK_ACTIONS 3u
+#define MSYS_NATIVE_ACTION_ID_CAPACITY 65u
+#define MSYS_NATIVE_INTENT_CAPACITY 161u
+
+typedef struct msys_native_quick_action {
+    char id[MSYS_NATIVE_ACTION_ID_CAPACITY];
+    char label[MSYS_NATIVE_NAME_CAPACITY];
+    char action[MSYS_NATIVE_INTENT_CAPACITY];
+} msys_native_quick_action;
 
 typedef struct msys_native_app {
     char component[MSYS_NATIVE_COMPONENT_CAPACITY];
     char name[MSYS_NATIVE_NAME_CAPACITY];
     char summary[MSYS_NATIVE_SUMMARY_CAPACITY];
     char icon_path[MSYS_NATIVE_PATH_CAPACITY];
+    char version[MSYS_NATIVE_VERSION_CAPACITY];
+    msys_native_quick_action quick_actions[MSYS_NATIVE_MAX_QUICK_ACTIONS];
+    size_t quick_action_count;
 } msys_native_app;
 
 typedef struct msys_native_task {
@@ -117,6 +130,14 @@ const char *msys_native_task_display_name(
 
 int msys_native_json_escape(
     const char *value,
+    char *output,
+    size_t capacity
+);
+
+/* Build the exact payload accepted by msys.core.activate. */
+int msys_native_quick_action_payload(
+    const msys_native_quick_action *action,
+    const char *component,
     char *output,
     size_t capacity
 );
