@@ -133,7 +133,12 @@ class NativeShellManifestTests(unittest.TestCase):
         probe = (ROOT / "tests" / "probe_lvgl_shell.sh").read_text(encoding="utf-8")
         self.assertIn("launcher geometry apps=", probe)
         self.assertIn("launcher tile pixels are not visible", probe)
-        self.assertIn("xwd -silent", probe)
+        self.assertIn("build/x11-pixel-probe", probe)
+        self.assertNotIn("xwd", probe)
+        pixel_probe = (ROOT / "tests" / "x11_pixel_probe.c").read_text(encoding="utf-8")
+        self.assertIn("XGetImage", pixel_probe)
+        self.assertIn("XGetPixel", pixel_probe)
+        self.assertIn("image->green_mask", pixel_probe)
 
     def test_phase_two_role_boundary_does_not_claim_missing_contracts(self) -> None:
         source = (ROOT / "README.md").read_text(encoding="utf-8")

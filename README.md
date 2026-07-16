@@ -6,6 +6,8 @@ Version 0.6.6 explicitly applies the vertical flex flow to the instantiated
 Launcher document root. LVGL 9.3 parses the XML component but does not apply the
 root `<view>` flex-flow attribute, which had placed the grid at the right edge.
 The Xvfb probe now renders real test tiles and checks their geometry and pixels.
+Pixel verification uses a repository-built Xlib `XGetImage` helper and does not
+require `xwd`, ImageMagick, Python, or any host package installation.
 
 Version 0.6.5 makes the Launcher work area independent of LVGL's initial
 content-size pass: C resolves the remaining height from the live root, header,

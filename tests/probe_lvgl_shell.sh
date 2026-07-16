@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-for command in Xvfb xwininfo xprop xwd od; do
+for command in Xvfb xwininfo xprop; do
     command -v "$command" >/dev/null 2>&1 || {
         echo "lvgl-shell-probe: missing optional command: $command" >&2
         exit 77
@@ -11,7 +11,6 @@ done
 display=:96
 log=${TMPDIR:-/tmp}/msys-shell-lvgl-xvfb.$$.log
 shell_log=${TMPDIR:-/tmp}/msys-shell-lvgl.$$.log
-snapshot=${TMPDIR:-/tmp}/msys-shell-lvgl.$$.xwd
 probe_icon=${TMPDIR:-/tmp}/msys-shell-lvgl-icon.$$.ppm
 probe_state=${TMPDIR:-/tmp}/msys-shell-lvgl-state.$$
 mkdir "$probe_state"
@@ -23,7 +22,7 @@ cleanup() {
     [ -z "$shell_pid" ] || kill "$shell_pid" 2>/dev/null || true
     kill "$xvfb_pid" 2>/dev/null || true
     wait "$xvfb_pid" 2>/dev/null || true
-    rm -f "$log" "$shell_log" "$snapshot" "$probe_icon"
+    rm -f "$log" "$shell_log" "$probe_icon"
     rm -f "$probe_state/launcher-layout.v1"
     rmdir "$probe_state" 2>/dev/null || true
 }
@@ -120,16 +119,6 @@ set -- $(printf '%s\n' "$geometry_line" | awk '
 [ $(( ${13} + ${15} )) -le $(( $7 + $9 )) ]
 [ $(( ${14} + ${16} )) -le $(( $8 + ${10} )) ]
 
-# The 1x1 pure-green probe icon is scaled into every tile. Three consecutive
-# green XRGB pixels prove that children are not merely in bounds but painted.
-DISPLAY="$display" xwd -silent -id "$launcher" -out "$snapshot"
-od -An -v -tx1 "$snapshot" | tr -d ' \n' | grep -Eq \
-    '00fc000000fc000000fc0000|0000fc000000fc000000fc00' || {
-    echo "lvgl-shell-probe: launcher tile pixels are not visible" >&2
-    cat "$shell_log" >&2
-    exit 1
-}
-
 # Mapping can produce one late Expose after the window first becomes visible.
 # Wait for that finite startup damage to settle, then observe longer than one
 # clock period. The clock may damage Chrome, never the launcher surface.
@@ -157,6 +146,14 @@ sleep 1.10
 second=$(DISPLAY="$display" xprop -id "$launcher" _MSYS_LVGL_LAST_FLUSH)
 [ "$first" = "$second" ] || {
     echo "lvgl-shell-probe: idle launcher kept refreshing" >&2
+    exit 1
+}
+
+# The 1x1 pure-green probe icon is scaled into every tile. Check pixels only
+# after startup damage has settled so XGetImage cannot race the first flush.
+DISPLAY="$display" build/x11-pixel-probe "$launcher" 128 || {
+    echo "lvgl-shell-probe: launcher tile pixels are not visible" >&2
+    cat "$shell_log" >&2
     exit 1
 }
 

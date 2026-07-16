@@ -40,6 +40,7 @@ NOTIFICATION_TEST_TARGET := $(BUILD_DIR)/test-notification
 CLOCK_TEST_TARGET := $(BUILD_DIR)/test-clock
 SYSTEM_METRICS_TEST_TARGET := $(BUILD_DIR)/test-system-metrics
 LAUNCHER_LAYOUT_TEST_TARGET := $(BUILD_DIR)/test-launcher-layout
+X11_PIXEL_PROBE_TARGET := $(BUILD_DIR)/x11-pixel-probe
 
 .PHONY: all clean test strict sdk ui i18n integration-test lvgl lvgl-probe
 
@@ -78,8 +79,11 @@ $(LVGL_PACKAGE_TARGET): $(LVGL_TARGET) $(LVGL_UI_FILES)
 
 lvgl: $(LVGL_PACKAGE_TARGET)
 
-lvgl-probe: $(LVGL_PACKAGE_TARGET)
+lvgl-probe: $(LVGL_PACKAGE_TARGET) $(X11_PIXEL_PROBE_TARGET)
 	sh tests/probe_lvgl_shell.sh
+
+$(X11_PIXEL_PROBE_TARGET): tests/x11_pixel_probe.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) tests/x11_pixel_probe.c -o $@ -lX11
 
 $(BUILD_DIR)/main.o: src/main.c generated/shell_catalog.h \
 	include/msys_shell_native/model.h include/msys_shell_native/catalog.h \
