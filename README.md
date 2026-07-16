@@ -1,8 +1,8 @@
 # MSYS Native Shell
 
-Current source version: `0.3.25`.
+Current source version: `0.3.26`.
 
-Version 0.3.25 keeps normal Recents limited to real application windows while
+Version 0.3.26 keeps normal Recents limited to real application windows while
 its separate background-process page requests the bounded `all-msys` process
 scope, including ready hidden role surfaces such as the touch input method.
 Rows expose component state, lifecycle, runtime, and RSS; the existing opt-in

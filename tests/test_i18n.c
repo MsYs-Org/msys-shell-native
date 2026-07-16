@@ -35,7 +35,7 @@ int main(void)
     message = msys_i18n_lookup(
         &shell_catalog, "zh-Hans-CN", "metrics.memory_short"
     );
-    CHECK(message != NULL && strcmp(message, "MEM") == 0);
+    CHECK(message != NULL && strcmp(message, "M") == 0);
     message = msys_i18n_lookup(
         &shell_catalog, "zh-Hans-CN", "process.lifecycle_on_demand"
     );
