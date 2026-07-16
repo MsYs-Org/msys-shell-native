@@ -1,7 +1,11 @@
 CC ?= cc
 AR ?= ar
 SDK_DIR ?= ../msys-sdk
-UI_DIR ?= ../msys-ui-lvgl
+# Resolve the shared UI runtime next to the selected SDK root.  Native Windows
+# sync builds use an absolute SDK_DIR while their temporary source stage lives
+# below .sync/, so a source-relative ../msys-ui-lvgl would point at the wrong
+# directory.
+UI_DIR ?= $(abspath $(SDK_DIR)/../msys-ui-lvgl)
 BUILD_DIR ?= build
 BIN_DIR ?= bin
 
