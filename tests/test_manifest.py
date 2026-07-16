@@ -16,9 +16,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.2")
+        self.assertEqual(self.document["package"]["version"], "0.6.3")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.2"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.3"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -65,6 +65,7 @@ class NativeShellManifestTests(unittest.TestCase):
             component["x-msys-ui-provider"]["fallback_component"],
             "org.msys.shell.native:desktop-shell",
         )
+        self.assertIn("mipc.call:role:hal-manager", component["permissions"])
         source = (ROOT / "src" / "lvgl_main.c").read_text(encoding="utf-8")
         self.assertIn("msys_ui_document_load_file", source)
         self.assertIn("msys_ui_document_find", source)

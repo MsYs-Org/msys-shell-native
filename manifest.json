@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.shell.native",
     "name": "MSYS Native Shell",
-    "version": "0.6.2",
+    "version": "0.6.3",
     "kind": "system",
     "vendor": "MSYS",
     "summary": "Lean LVGL/XML shell with an Xlib compatibility fallback",
@@ -223,6 +223,7 @@
         "display:x11",
         "mipc.call:msys.core",
         "mipc.call:role:window-manager",
+        "mipc.call:role:hal-manager",
         "mipc.event:subscribe:msys.session.preferences.changed",
         "mipc.event:subscribe:msys.timezone.changed",
         "mipc.event:subscribe:msys.install.package_changed",
