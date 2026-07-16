@@ -77,7 +77,7 @@ $(LVGL_PACKAGE_TARGET): $(LVGL_TARGET) $(LVGL_UI_FILES)
 lvgl: $(LVGL_PACKAGE_TARGET)
 
 lvgl-probe: $(LVGL_PACKAGE_TARGET)
-	tests/probe_lvgl_shell.sh
+	sh tests/probe_lvgl_shell.sh
 
 $(BUILD_DIR)/main.o: src/main.c generated/shell_catalog.h \
 	include/msys_shell_native/model.h include/msys_shell_native/catalog.h \
