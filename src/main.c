@@ -3,6 +3,7 @@
 #include "msys/mipc.h"
 #include "msys/i18n.h"
 #include "msys_shell_native/catalog.h"
+#include "msys_shell_native/clock.h"
 #include "msys_shell_native/image.h"
 #include "msys_shell_native/model.h"
 #include "msys_shell_native/notification.h"
@@ -27,7 +28,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.21"
+#define APP_VERSION "0.3.22"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8
@@ -250,6 +251,7 @@ typedef struct native_shell {
     enum msys_native_navigation_action button_pressed_action;
     int chrome_pressed_action;
     int chrome_second_valid;
+    int chrome_clock_debug;
     int clip_active;
     XRectangle clip;
     uint64_t nav_feedback_until_ms;
@@ -263,6 +265,11 @@ typedef struct native_shell {
     uint64_t launch_transition_until_ms;
     uint64_t next_request_id;
     time_t chrome_second;
+    char chrome_clock_text[MSYS_NATIVE_CLOCK_TEXT_CAPACITY];
+    Pixmap chrome_clock_buffer;
+    int chrome_clock_buffer_width;
+    int chrome_clock_buffer_height;
+    int chrome_clock_buffer_depth;
     char toast_text[192];
     char launch_transition_component[MSYS_NATIVE_COMPONENT_CAPACITY];
     char last_display_recovery[256];
@@ -1262,29 +1269,6 @@ static void draw_text(
     }
 }
 
-static void draw_text_centered(
-    native_shell *shell,
-    Drawable drawable,
-    int center_x,
-    int surface_height,
-    const char *text,
-    unsigned long value
-)
-{
-    int width = 0;
-    int glyph_y = 0;
-    int glyph_height = 1;
-    (void)text_metrics(shell, text, &width, &glyph_y, &glyph_height);
-    draw_text(
-        shell,
-        drawable,
-        center_x - width / 2,
-        msys_native_center_baseline(surface_height, glyph_y, glyph_height),
-        text,
-        value
-    );
-}
-
 static void draw_text_centered_in_rect(
     native_shell *shell,
     Drawable drawable,
@@ -1709,6 +1693,144 @@ static void chrome_wifi_bounds(int width, int *x, int *icon_width)
     if (*icon_width < 1) *icon_width = 1;
 }
 
+static int chrome_clock_format(time_t current, char *output, size_t capacity)
+{
+    struct tm local_time;
+    if (
+        output == NULL || capacity < MSYS_NATIVE_CLOCK_TEXT_CAPACITY ||
+        current == (time_t)-1 || localtime_r(&current, &local_time) == NULL ||
+        strftime(output, capacity, "%H:%M:%S", &local_time) != 8u
+    ) {
+        if (output != NULL && capacity > 0u) {
+            (void)snprintf(output, capacity, "--:--:--");
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static void chrome_clock_remember(
+    native_shell *shell,
+    time_t current,
+    const char *text,
+    int valid
+)
+{
+    (void)snprintf(
+        shell->chrome_clock_text,
+        sizeof(shell->chrome_clock_text),
+        "%s",
+        text
+    );
+    shell->chrome_second = current;
+    shell->chrome_second_valid = valid;
+}
+
+static void draw_chrome_clock_slots(
+    native_shell *shell,
+    Drawable drawable,
+    int clock_x,
+    int clock_width,
+    int height,
+    const char *clock_text,
+    unsigned int mask
+)
+{
+    size_t slot;
+    for (slot = 0u; slot < MSYS_NATIVE_CLOCK_SLOT_COUNT; slot++) {
+        char glyph[2];
+        int slot_x;
+        int slot_width;
+        if (
+            (mask & (1u << slot)) == 0u ||
+            !msys_native_clock_slot_bounds(
+                clock_x, clock_width, slot, &slot_x, &slot_width
+            )
+        ) continue;
+        glyph[0] = clock_text[slot];
+        glyph[1] = '\0';
+        draw_text_centered_in_rect(
+            shell,
+            drawable,
+            slot_x,
+            0,
+            slot_width,
+            height,
+            glyph,
+            shell->foreground
+        );
+    }
+}
+
+static Pixmap chrome_clock_pixmap(
+    native_shell *shell,
+    int width,
+    int height,
+    int depth
+)
+{
+    if (
+        shell->chrome_clock_buffer != None &&
+        (
+            shell->chrome_clock_buffer_width != width ||
+            shell->chrome_clock_buffer_height != height ||
+            shell->chrome_clock_buffer_depth != depth
+        )
+    ) {
+        XFreePixmap(shell->display, shell->chrome_clock_buffer);
+        shell->chrome_clock_buffer = None;
+    }
+    if (shell->chrome_clock_buffer == None) {
+        shell->chrome_clock_buffer = XCreatePixmap(
+            shell->display,
+            shell->chrome,
+            (unsigned int)width,
+            (unsigned int)height,
+            (unsigned int)depth
+        );
+        if (shell->chrome_clock_buffer == None) return None;
+        shell->chrome_clock_buffer_width = width;
+        shell->chrome_clock_buffer_height = height;
+        shell->chrome_clock_buffer_depth = depth;
+    }
+    return shell->chrome_clock_buffer;
+}
+
+static void publish_clock_damage_debug(
+    native_shell *shell,
+    const char *previous,
+    const char *current,
+    unsigned int mask,
+    unsigned int copies
+)
+{
+    char value[128];
+    Atom property;
+    Atom utf8;
+    if (shell->chrome_clock_debug == 0) return;
+    (void)snprintf(
+        value,
+        sizeof(value),
+        "previous=%s;current=%s;mask=0x%02x;copies=%u",
+        previous && *previous ? previous : "none",
+        current,
+        mask,
+        copies
+    );
+    property = XInternAtom(shell->display, "_MSYS_CLOCK_DAMAGE", False);
+    utf8 = XInternAtom(shell->display, "UTF8_STRING", False);
+    XChangeProperty(
+        shell->display,
+        shell->chrome,
+        property,
+        utf8,
+        8,
+        PropModeReplace,
+        (const unsigned char *)value,
+        (int)strlen(value)
+    );
+}
+
 static void draw_chrome_wifi_icon(
     native_shell *shell,
     Drawable drawable,
@@ -1770,9 +1892,9 @@ static void draw_chrome_wifi_icon(
 static void draw_chrome(native_shell *shell)
 {
     XWindowAttributes attributes;
-    char clock_text[16];
+    char clock_text[MSYS_NATIVE_CLOCK_TEXT_CAPACITY];
     time_t current = time(NULL);
-    struct tm local_time;
+    int clock_valid;
     int clock_x;
     int clock_width;
     int middle_y;
@@ -1796,18 +1918,17 @@ static void draw_chrome(native_shell *shell)
             12u, shell->surface_variant
         );
     }
-    if (localtime_r(&current, &local_time) == NULL) {
-        (void)snprintf(clock_text, sizeof(clock_text), "--:--:--");
-        shell->chrome_second_valid = 0;
-    } else {
-        (void)strftime(clock_text, sizeof(clock_text), "%H:%M:%S", &local_time);
-        shell->chrome_second = current;
-        shell->chrome_second_valid = 1;
-    }
-    draw_text_centered(
-        shell, shell->chrome, attributes.width / 2, attributes.height,
-        clock_text, shell->foreground
+    clock_valid = chrome_clock_format(current, clock_text, sizeof(clock_text));
+    draw_chrome_clock_slots(
+        shell,
+        shell->chrome,
+        clock_x,
+        clock_width,
+        attributes.height,
+        clock_text,
+        0xffu
     );
+    chrome_clock_remember(shell, current, clock_text, clock_valid);
     middle_y = attributes.height / 2;
     set_foreground(shell, shell->foreground);
     XDrawArc(shell->display, shell->chrome, shell->gc, 13, middle_y - 8, 13u, 13u, 0, 360 * 64);
@@ -1821,22 +1942,81 @@ static void draw_chrome(native_shell *shell)
     XFillArc(shell->display, shell->chrome, shell->gc, attributes.width - 24, middle_y - 10, 5u, 5u, 0, 360 * 64);
     XFillArc(shell->display, shell->chrome, shell->gc, attributes.width - 18, middle_y - 3, 5u, 5u, 0, 360 * 64);
     XFillArc(shell->display, shell->chrome, shell->gc, attributes.width - 27, middle_y + 4, 5u, 5u, 0, 360 * 64);
-    (void)clock_x;
-    (void)clock_width;
 }
 
 static void draw_chrome_clock_damage(native_shell *shell)
 {
     XWindowAttributes attributes;
-    int x;
-    int width;
+    char previous[MSYS_NATIVE_CLOCK_TEXT_CAPACITY];
+    char current_text[MSYS_NATIVE_CLOCK_TEXT_CAPACITY];
+    time_t current = time(NULL);
+    Pixmap buffer;
+    unsigned int mask;
+    unsigned int copies = 0u;
+    int clock_x;
+    int clock_width;
+    int valid;
+    size_t slot;
     if (!XGetWindowAttributes(shell->display, shell->chrome, &attributes)) return;
-    chrome_clock_bounds(attributes.width, &x, &width);
+    chrome_clock_bounds(attributes.width, &clock_x, &clock_width);
+    (void)snprintf(previous, sizeof(previous), "%s", shell->chrome_clock_text);
+    valid = chrome_clock_format(current, current_text, sizeof(current_text));
+    mask = msys_native_clock_changed_slots(previous, current_text);
+    if (mask == 0u) {
+        chrome_clock_remember(shell, current, current_text, valid);
+        publish_clock_damage_debug(shell, previous, current_text, mask, 0u);
+        return;
+    }
+    buffer = chrome_clock_pixmap(
+        shell, clock_width, attributes.height, attributes.depth
+    );
+    if (buffer == None) return;
+    set_foreground(shell, shell->surface);
+    XFillRectangle(
+        shell->display,
+        buffer,
+        shell->gc,
+        0,
+        0,
+        (unsigned int)clock_width,
+        (unsigned int)attributes.height
+    );
+    draw_chrome_clock_slots(
+        shell,
+        buffer,
+        0,
+        clock_width,
+        attributes.height,
+        current_text,
+        0xffu
+    );
     begin_atomic_presentation(shell);
-    begin_clip(shell, x, 0, width, attributes.height);
-    draw_chrome(shell);
-    end_clip(shell);
+    for (slot = 0u; slot < MSYS_NATIVE_CLOCK_SLOT_COUNT; slot++) {
+        int slot_x;
+        int slot_width;
+        if (
+            (mask & (1u << slot)) == 0u ||
+            !msys_native_clock_slot_bounds(
+                0, clock_width, slot, &slot_x, &slot_width
+            )
+        ) continue;
+        XCopyArea(
+            shell->display,
+            buffer,
+            shell->chrome,
+            shell->gc,
+            slot_x,
+            0,
+            (unsigned int)slot_width,
+            (unsigned int)attributes.height,
+            clock_x + slot_x,
+            0
+        );
+        copies++;
+    }
     end_atomic_presentation(shell);
+    chrome_clock_remember(shell, current, current_text, valid);
+    publish_clock_damage_debug(shell, previous, current_text, mask, copies);
 }
 
 static void draw_chrome_wifi_damage(native_shell *shell)
@@ -7270,6 +7450,10 @@ static void shutdown_shell(native_shell *shell)
     }
     image_caches_dispose(shell->app_icons, MSYS_NATIVE_MAX_APPS);
     image_caches_dispose(shell->task_previews, MSYS_NATIVE_MAX_TASKS);
+    if (shell->chrome_clock_buffer != None) {
+        XFreePixmap(shell->display, shell->chrome_clock_buffer);
+        shell->chrome_clock_buffer = None;
+    }
     xft_dispose(shell->display, &shell->xft);
     if (shell->font_set != NULL) {
         XFreeFontSet(shell->display, shell->font_set);
@@ -7313,6 +7497,7 @@ int main(int argc, char **argv)
     }
     shell.next_request_id = 1000u;
     shell.buttons_mode = mode != NULL && strcmp(mode, "buttons") == 0;
+    shell.chrome_clock_debug = getenv("MSYS_NATIVE_CLOCK_DEBUG") != NULL;
     if (argc > 1 && strcmp(argv[1], "--version") == 0) {
         puts(APP_VERSION);
         return 0;

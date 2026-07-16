@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.21")
+        self.assertEqual(self.document["package"]["version"], "0.3.22")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.21"', implementation)
+        self.assertIn('#define APP_VERSION "0.3.22"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -166,7 +166,7 @@ class NativeShellManifestTests(unittest.TestCase):
             implementation.index("static void draw_text_centered"):
             implementation.index("static void draw_text_ellipsized")
         ]
-        self.assertIn("msys_native_center_baseline(surface_height, glyph_y, glyph_height)", centered)
+        self.assertIn("msys_native_center_baseline(height, glyph_y, glyph_height)", centered)
         self.assertIn("*glyph_y = -(int)extents.y;", implementation)
         self.assertNotIn("surface_height / 2 + 7", centered)
         periodic = implementation[
@@ -228,7 +228,7 @@ class NativeShellManifestTests(unittest.TestCase):
 
     def test_adaptive_overview_icons_and_damage_paths_are_native(self) -> None:
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('strftime(clock_text, sizeof(clock_text), "%H:%M:%S"', implementation)
+        self.assertIn('strftime(output, capacity, "%H:%M:%S"', implementation)
         self.assertIn("draw_chrome_clock_damage", implementation)
         self.assertIn("msys_native_recents_compute", implementation)
         self.assertIn("redraw_launcher_viewport", implementation)
@@ -361,9 +361,22 @@ class NativeShellManifestTests(unittest.TestCase):
             implementation.index("static void draw_chrome_wifi_damage")
         ]
         self.assertIn("chrome_clock_bounds", clock_damage)
+        self.assertIn("msys_native_clock_changed_slots", clock_damage)
+        self.assertIn("chrome_clock_pixmap", clock_damage)
         self.assertIn("begin_atomic_presentation(shell)", clock_damage)
-        self.assertIn("begin_clip(shell, x, 0, width, attributes.height)", clock_damage)
+        self.assertIn("XCopyArea", clock_damage)
+        self.assertIn("mask & (1u << slot)", clock_damage)
+        self.assertNotIn("draw_chrome(shell)", clock_damage)
+        self.assertNotIn("begin_clip", clock_damage)
         self.assertIn("end_atomic_presentation(shell)", clock_damage)
+        clock_model = (ROOT / "src" / "clock.c").read_text(encoding="utf-8")
+        self.assertIn("MSYS_NATIVE_CLOCK_DIGIT_MASK", clock_model)
+        self.assertIn("previous[index] != current[index]", clock_model)
+        self.assertIn("clock damaged a fixed colon slot", runtime_probe)
+        runtime_script = (ROOT / "tests" / "test_mobile_x11_runtime.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("MSYS_NATIVE_CLOCK_DEBUG=1", runtime_script)
         show_transition = implementation[
             implementation.index("static void show_launch_transition"):
             implementation.index("static void present_recents")

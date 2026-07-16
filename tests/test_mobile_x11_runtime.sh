@@ -101,6 +101,7 @@ run_case()
         PYTHONDONTWRITEBYTECODE=1 \
         MSYS_LAYOUT_PROFILE=mobile \
         MSYS_NATIVE_NAV_MODE="$mode" \
+        MSYS_NATIVE_CLOCK_DEBUG=1 \
         MSYS_PROBE_INPUT_MODE="$mode" \
         MSYS_PROBE_EXPECT_MOBILE="$expected_name" \
         MSYS_X11_POLICY_DEBUG="$POLICY" \

@@ -1,6 +1,13 @@
 # MSYS Native Shell
 
-Current source version: `0.3.21`.
+Current source version: `0.3.22`.
+
+Version 0.3.22 gives `HH:MM:SS` eight fixed character slots and updates only
+numeric slots whose glyph changed. A small reusable Pixmap is completed before
+one bounded copy per changed digit, so the capture path cannot observe a blank
+clear/draw intermediate; colon slots are never copied by the periodic path.
+Minute and hour slots therefore add damage only on their real carry. The
+existing display sink and stable dirty policy are unchanged.
 
 Version 0.3.21 adds the native `notification-center` role to the existing C
 Shell process. It keeps at most 24 normalized notifications in a fixed-size

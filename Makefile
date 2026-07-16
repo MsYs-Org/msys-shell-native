@@ -10,7 +10,7 @@ CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
 LDLIBS += $(SDK_DIR)/build/libmsys-mipc.a -lX11 -ldl
 
 SOURCES := src/main.c src/model.c src/catalog.c src/preferences.c src/image.c \
-	src/notification.c
+	src/notification.c src/clock.c
 OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SOURCES))
 TARGET := $(BIN_DIR)/msys-shell-native
 TEST_TARGET := $(BUILD_DIR)/test-model
@@ -19,6 +19,7 @@ PREFERENCES_TEST_TARGET := $(BUILD_DIR)/test-preferences
 IMAGE_TEST_TARGET := $(BUILD_DIR)/test-image
 I18N_TEST_TARGET := $(BUILD_DIR)/test-i18n
 NOTIFICATION_TEST_TARGET := $(BUILD_DIR)/test-notification
+CLOCK_TEST_TARGET := $(BUILD_DIR)/test-clock
 
 .PHONY: all clean test strict sdk i18n integration-test
 
@@ -36,7 +37,7 @@ $(TARGET): $(OBJECTS) | $(BIN_DIR) sdk
 $(BUILD_DIR)/main.o: src/main.c generated/shell_catalog.h \
 	include/msys_shell_native/model.h include/msys_shell_native/catalog.h \
 	include/msys_shell_native/preferences.h include/msys_shell_native/image.h \
-	include/msys_shell_native/notification.h \
+	include/msys_shell_native/notification.h include/msys_shell_native/clock.h \
 	$(SDK_DIR)/include/msys/mipc.h $(SDK_DIR)/include/msys/i18n.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
@@ -55,6 +56,9 @@ $(BUILD_DIR)/image.o: src/image.c include/msys_shell_native/image.h | $(BUILD_DI
 
 $(BUILD_DIR)/notification.o: src/notification.c \
 	include/msys_shell_native/notification.h $(SDK_DIR)/include/msys/mipc.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/clock.o: src/clock.c include/msys_shell_native/clock.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(TEST_TARGET): tests/test_model.c src/model.c include/msys_shell_native/model.h | $(BUILD_DIR)
@@ -77,14 +81,20 @@ $(NOTIFICATION_TEST_TARGET): tests/test_notification.c src/notification.c \
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_notification.c src/notification.c \
 		-o $@ $(SDK_DIR)/build/libmsys-mipc.a
 
+$(CLOCK_TEST_TARGET): tests/test_clock.c src/clock.c \
+	include/msys_shell_native/clock.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_clock.c src/clock.c -o $@
+
 test: $(TEST_TARGET) $(CATALOG_TEST_TARGET) $(PREFERENCES_TEST_TARGET) \
-	$(IMAGE_TEST_TARGET) $(I18N_TEST_TARGET) $(NOTIFICATION_TEST_TARGET)
+	$(IMAGE_TEST_TARGET) $(I18N_TEST_TARGET) $(NOTIFICATION_TEST_TARGET) \
+	$(CLOCK_TEST_TARGET)
 	$(TEST_TARGET)
 	$(CATALOG_TEST_TARGET)
 	$(PREFERENCES_TEST_TARGET)
 	$(IMAGE_TEST_TARGET)
 	$(I18N_TEST_TARGET)
 	$(NOTIFICATION_TEST_TARGET)
+	$(CLOCK_TEST_TARGET)
 
 strict:
 	$(MAKE) clean

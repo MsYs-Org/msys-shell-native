@@ -649,6 +649,41 @@ def window_pixel_digest(title: str) -> bytes:
     return hashlib.sha256(result.stdout).digest()
 
 
+def wait_clock_slot_damage(timeout: float = 2.2) -> dict[str, int | str]:
+    """Observe one real periodic fixed-slot clock commit through X11 metadata."""
+    deadline = time.monotonic() + timeout
+    pattern = re.compile(
+        r"previous=([^;]+);current=([^;]+);mask=0x([0-9a-fA-F]+);copies=(\d+)"
+    )
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            [
+                "xprop",
+                "-display",
+                os.environ["DISPLAY"],
+                "-name",
+                "MSYS Chrome",
+                "_MSYS_CLOCK_DAMAGE",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        match = pattern.search(result.stdout)
+        if match is not None:
+            mask = int(match.group(3), 16)
+            copies = int(match.group(4))
+            if mask != 0:
+                return {
+                    "previous": match.group(1),
+                    "current": match.group(2),
+                    "mask": mask,
+                    "copies": copies,
+                }
+        time.sleep(0.04)
+    raise RuntimeError("clock did not publish a periodic fixed-slot damage commit")
+
+
 def window_geometry(title: str) -> tuple[int, int]:
     result = subprocess.run(
         ["xwininfo", "-display", os.environ["DISPLAY"], "-name", title],
@@ -847,6 +882,16 @@ def main() -> int:
             raise RuntimeError(f"launcher did not retain authoritative apps: {listed}")
         if listed_apps[0].get("icon") != str(thumbnail):
             raise RuntimeError(f"launcher did not resolve the package icon: {listed}")
+
+        clock_damage = wait_clock_slot_damage()
+        clock_mask = int(clock_damage["mask"])
+        clock_copies = int(clock_damage["copies"])
+        if clock_mask & ~0xDB:
+            raise RuntimeError(f"clock damaged a fixed colon slot: {clock_damage}")
+        if not clock_mask & (1 << 7):
+            raise RuntimeError(f"clock did not update its seconds-unit slot: {clock_damage}")
+        if clock_copies != clock_mask.bit_count() or not 1 <= clock_copies <= 6:
+            raise RuntimeError(f"clock slot copies do not match damage mask: {clock_damage}")
 
         # Capture early in the current second so the clock cannot tick during
         # the short event/reply sequence.  The manifest test separately proves
