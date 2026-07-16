@@ -32,6 +32,18 @@ int main(void)
         message,
         "\xe5\x90\x8e\xe5\x8f\xb0\xe8\xbf\x9b\xe7\xa8\x8b"
     ) == 0);
+    message = msys_i18n_lookup(
+        &shell_catalog, "zh-Hans-CN", "metrics.memory_short"
+    );
+    CHECK(message != NULL && strcmp(
+        message, "\xe5\x86\x85\xe5\xad\x98"
+    ) == 0);
+    message = msys_i18n_lookup(
+        &shell_catalog, "zh-Hans-CN", "process.lifecycle_on_demand"
+    );
+    CHECK(message != NULL && strcmp(
+        message, "\xe6\x8c\x89\xe9\x9c\x80"
+    ) == 0);
     CHECK(strcmp(msys_i18n_lookup(&shell_catalog, "C", "launcher.title"), "Apps") == 0);
     puts("native shell i18n tests passed");
     return 0;

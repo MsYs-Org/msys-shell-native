@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.23")
+        self.assertEqual(self.document["package"]["version"], "0.3.24")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.23"', implementation)
+        self.assertIn('#define APP_VERSION "0.3.24"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -438,7 +438,7 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("PENDING_PROCESS_LIST", implementation)
         self.assertIn('"list_processes"', implementation)
         self.assertIn(
-            '"{\\\"include_system\\\":%s,\\\"limit\\\":64}"',
+            '"{\\\"scope\\\":\\\"all-msys\\\",\\\"include_system\\\":%s,\\\"limit\\\":64}"',
             implementation,
         )
         self.assertIn("msys_native_parse_processes", catalog)
@@ -453,6 +453,11 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn('outbound_call("msys.core", "list_processes")', runtime)
         self.assertIn("process row click dismissed the page", runtime)
         self.assertIn("process list did not follow drag before release", runtime)
+        self.assertIn('"scope": "all-msys"', runtime)
+        self.assertIn("Touch input method", runtime)
+        self.assertIn("system metrics repainted outside its header bounds", runtime)
+        self.assertIn("SYSTEM_METRICS_INTERVAL_MS 1000u", implementation)
+        self.assertIn("redraw_recents_system_metrics", implementation)
 
     def test_chrome_wifi_uses_hal_events_and_bounded_icon_damage(self) -> None:
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")

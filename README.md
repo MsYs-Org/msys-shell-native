@@ -1,6 +1,15 @@
 # MSYS Native Shell
 
-Current source version: `0.3.23`.
+Current source version: `0.3.24`.
+
+Version 0.3.24 keeps normal Recents limited to real application windows while
+its separate background-process page requests the bounded `all-msys` process
+scope, including ready hidden role surfaces such as the touch input method.
+Rows expose component state, lifecycle, runtime, and RSS; the existing opt-in
+checkbox remains the only way to add non-MSYS procfs entries. Overview also
+samples CPU deltas and `MemAvailable` directly from procfs once per second
+while it is mapped. Its compact CPU/MEM summary repaints only the small header
+text rectangle and adds no process, service, allocation loop, or idle damage.
 
 Version 0.3.23 keeps the explicit `notification-center` role as a normal
 managed X11 overlay. It no longer marks that surface override-redirect, so the

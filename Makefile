@@ -10,7 +10,7 @@ CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
 LDLIBS += $(SDK_DIR)/build/libmsys-mipc.a -lX11 -ldl
 
 SOURCES := src/main.c src/model.c src/catalog.c src/preferences.c src/image.c \
-	src/notification.c src/clock.c
+	src/notification.c src/clock.c src/system_metrics.c
 OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SOURCES))
 TARGET := $(BIN_DIR)/msys-shell-native
 TEST_TARGET := $(BUILD_DIR)/test-model
@@ -20,6 +20,7 @@ IMAGE_TEST_TARGET := $(BUILD_DIR)/test-image
 I18N_TEST_TARGET := $(BUILD_DIR)/test-i18n
 NOTIFICATION_TEST_TARGET := $(BUILD_DIR)/test-notification
 CLOCK_TEST_TARGET := $(BUILD_DIR)/test-clock
+SYSTEM_METRICS_TEST_TARGET := $(BUILD_DIR)/test-system-metrics
 
 .PHONY: all clean test strict sdk i18n integration-test
 
@@ -38,6 +39,7 @@ $(BUILD_DIR)/main.o: src/main.c generated/shell_catalog.h \
 	include/msys_shell_native/model.h include/msys_shell_native/catalog.h \
 	include/msys_shell_native/preferences.h include/msys_shell_native/image.h \
 	include/msys_shell_native/notification.h include/msys_shell_native/clock.h \
+	include/msys_shell_native/system_metrics.h \
 	$(SDK_DIR)/include/msys/mipc.h $(SDK_DIR)/include/msys/i18n.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
@@ -59,6 +61,10 @@ $(BUILD_DIR)/notification.o: src/notification.c \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/clock.o: src/clock.c include/msys_shell_native/clock.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/system_metrics.o: src/system_metrics.c \
+	include/msys_shell_native/system_metrics.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(TEST_TARGET): tests/test_model.c src/model.c include/msys_shell_native/model.h | $(BUILD_DIR)
@@ -85,9 +91,14 @@ $(CLOCK_TEST_TARGET): tests/test_clock.c src/clock.c \
 	include/msys_shell_native/clock.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_clock.c src/clock.c -o $@
 
+$(SYSTEM_METRICS_TEST_TARGET): tests/test_system_metrics.c src/system_metrics.c \
+	include/msys_shell_native/system_metrics.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_system_metrics.c \
+		src/system_metrics.c -o $@
+
 test: $(TEST_TARGET) $(CATALOG_TEST_TARGET) $(PREFERENCES_TEST_TARGET) \
 	$(IMAGE_TEST_TARGET) $(I18N_TEST_TARGET) $(NOTIFICATION_TEST_TARGET) \
-	$(CLOCK_TEST_TARGET)
+	$(CLOCK_TEST_TARGET) $(SYSTEM_METRICS_TEST_TARGET)
 	$(TEST_TARGET)
 	$(CATALOG_TEST_TARGET)
 	$(PREFERENCES_TEST_TARGET)
@@ -95,6 +106,7 @@ test: $(TEST_TARGET) $(CATALOG_TEST_TARGET) $(PREFERENCES_TEST_TARGET) \
 	$(I18N_TEST_TARGET)
 	$(NOTIFICATION_TEST_TARGET)
 	$(CLOCK_TEST_TARGET)
+	$(SYSTEM_METRICS_TEST_TARGET)
 
 strict:
 	$(MAKE) clean

@@ -8,6 +8,7 @@
 #include "msys_shell_native/model.h"
 #include "msys_shell_native/notification.h"
 #include "msys_shell_native/preferences.h"
+#include "msys_shell_native/system_metrics.h"
 #include "shell_catalog.h"
 
 #include <X11/Xatom.h>
@@ -28,7 +29,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.23"
+#define APP_VERSION "0.3.24"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8
@@ -51,6 +52,7 @@
 #define AUDIO_WRITE_TIMEOUT_MS 10000u
 #define AUDIO_EDGE_ZONE_DIVISOR 5
 #define WIFI_REFRESH_INTERVAL_MS 10000u
+#define SYSTEM_METRICS_INTERVAL_MS 1000u
 #define WIFI_STATE_TIMEOUT_MS 5000u
 #define DRAG_FRAME_MS 80u
 #define NOTIFICATION_HEADER_HEIGHT 68
@@ -287,6 +289,8 @@ typedef struct native_shell {
     msys_native_process_metadata process_metadata;
     enum catalog_state processes_state;
     char processes_message[192];
+    msys_native_system_metrics system_metrics;
+    uint64_t system_metrics_next_sample_ms;
     int process_view;
     int process_include_system;
     int process_scroll;
@@ -389,6 +393,7 @@ static int present_process_drag_frame(
 );
 static void redraw_controls_row(native_shell *shell, int index);
 static void redraw_process_content(native_shell *shell);
+static void redraw_recents_system_metrics(native_shell *shell);
 static void request_wifi_inventory(native_shell *shell);
 static void request_audio_state(native_shell *shell);
 static const char *tr(native_shell *shell, const char *key);
@@ -2434,6 +2439,37 @@ static void process_layout(
     (void)top;
 }
 
+static const char *process_state_text(native_shell *shell, const char *value)
+{
+    if (strcmp(value, "ready") == 0) return tr(shell, "process.state_ready");
+    if (strcmp(value, "starting") == 0) return tr(shell, "process.state_starting");
+    if (strcmp(value, "stopping") == 0) return tr(shell, "process.state_stopping");
+    if (strcmp(value, "running") == 0) return tr(shell, "process.state_running");
+    if (strcmp(value, "sleeping") == 0) return tr(shell, "process.state_sleeping");
+    if (strcmp(value, "failed") == 0) return tr(shell, "process.state_failed");
+    return value;
+}
+
+static const char *process_lifecycle_text(native_shell *shell, const char *value)
+{
+    if (strcmp(value, "background") == 0) {
+        return tr(shell, "process.lifecycle_background");
+    }
+    if (strcmp(value, "manual") == 0) {
+        return tr(shell, "process.lifecycle_manual");
+    }
+    if (strcmp(value, "on-demand") == 0) {
+        return tr(shell, "process.lifecycle_on_demand");
+    }
+    if (strcmp(value, "session") == 0) {
+        return tr(shell, "process.lifecycle_session");
+    }
+    if (strcmp(value, "supervisor") == 0) {
+        return tr(shell, "process.lifecycle_supervisor");
+    }
+    return value;
+}
+
 static void draw_process_row(
     native_shell *shell,
     const msys_native_process_layout *layout,
@@ -2448,7 +2484,15 @@ static void draw_process_row(
         (int)index * (layout->row_height + layout->gap) - shell->process_scroll;
     int row_width = width - right - layout->margin * 2;
     char detail[160];
-    const char *state = process->state[0] != '\0' ? process->state : "-";
+    const char *state_raw = process->component_state[0] != '\0'
+        ? process->component_state
+        : (process->state[0] != '\0' ? process->state : "-");
+    const char *lifecycle_raw = process->lifecycle[0] != '\0'
+        ? process->lifecycle : "-";
+    const char *runtime = process->runtime[0] != '\0'
+        ? process->runtime : "-";
+    const char *state = process_state_text(shell, state_raw);
+    const char *lifecycle = process_lifecycle_text(shell, lifecycle_raw);
     if (
         y + layout->row_height < layout->rows_top ||
         y > layout->rows_top + layout->viewport_height || row_width < 1
@@ -2482,7 +2526,26 @@ static void draw_process_row(
         process->name,
         shell->foreground
     );
-    if (process->rss_available != 0) {
+    if (process->msys_owned != 0 && process->rss_available != 0) {
+        (void)snprintf(
+            detail,
+            sizeof(detail),
+            "%s  %s  %s  %lluK",
+            state,
+            lifecycle,
+            runtime,
+            (unsigned long long)process->rss_kib
+        );
+    } else if (process->msys_owned != 0) {
+        (void)snprintf(
+            detail,
+            sizeof(detail),
+            "%s  %s  %s  RSS --",
+            state,
+            lifecycle,
+            runtime
+        );
+    } else if (process->rss_available != 0) {
         (void)snprintf(
             detail,
             sizeof(detail),
@@ -2617,6 +2680,44 @@ static void draw_process_content(native_shell *shell)
     }
 }
 
+static void draw_recents_system_metrics(
+    native_shell *shell,
+    int top,
+    int right_edge
+)
+{
+    int process_action_x = right_edge - 196;
+    int width = process_action_x - 14;
+    char summary[80];
+    if (width < 1) return;
+    set_foreground(shell, shell->surface_variant);
+    XFillRectangle(
+        shell->display,
+        shell->recents,
+        shell->gc,
+        14,
+        top + 22,
+        (unsigned int)width,
+        26u
+    );
+    if (!msys_native_system_metrics_format(
+            &shell->system_metrics,
+            tr(shell, "metrics.cpu_short"),
+            tr(shell, "metrics.memory_short"),
+            summary,
+            sizeof(summary)
+        )) return;
+    draw_text_ellipsized(
+        shell,
+        shell->recents,
+        14,
+        top + 43,
+        width,
+        summary,
+        shell->muted
+    );
+}
+
 static void draw_recents(native_shell *shell)
 {
     XWindowAttributes attributes;
@@ -2643,7 +2744,7 @@ static void draw_recents(native_shell *shell)
         shell,
         shell->recents,
         layout.margin,
-        top + 37,
+        top + 19,
         tr(shell, shell->process_view != 0 ? "process.title" : "recents.title"),
         shell->foreground
     );
@@ -2660,6 +2761,7 @@ static void draw_recents(native_shell *shell)
         );
     }
     process_action_x = attributes.width - right - 196;
+    draw_recents_system_metrics(shell, top, attributes.width - right);
     if (shell->recents_pressed == -3 || shell->process_view != 0) {
         fill_rounded(
             shell,
@@ -2686,7 +2788,7 @@ static void draw_recents(native_shell *shell)
     accent_width = (int)((shell->overview_accent_until_ms > now_ms()
         ? shell->overview_accent_until_ms - now_ms() : 0u) * 96u / OVERVIEW_ACCENT_MS);
     if (accent_width > 96) accent_width = 96;
-    fill_rounded(shell, shell->recents, layout.margin, top + 45, (unsigned int)(96 - accent_width), 4u, 2u, shell->accent);
+    fill_rounded(shell, shell->recents, layout.margin, top + 49, (unsigned int)(96 - accent_width), 4u, 2u, shell->accent);
     if (shell->process_view != 0) {
         draw_process_content(shell);
         return;
@@ -3682,6 +3784,7 @@ static void hide_recents(native_shell *shell, int restore_task)
     shell->recents_pulse_until_ms = 0u;
     shell->recents_close_pressed = 0;
     shell->tasks_refresh_queued = 0;
+    shell->system_metrics_next_sample_ms = 0u;
     if (shell->recents_pointer_active != 0) {
         shell->recents_pointer_active = 0;
         XUngrabPointer(shell->display, CurrentTime);
@@ -3773,6 +3876,7 @@ static void refresh_recents_presentation(native_shell *shell)
 
 static void show_recents(native_shell *shell)
 {
+    uint64_t current;
     hide_launch_transition(shell);
     hide_controls(shell);
     shell->recents_visible = 1;
@@ -3782,7 +3886,12 @@ static void show_recents(native_shell *shell)
     shell->process_scroll = 0;
     shell->process_redraw_pending = 0;
     shell->recents_pressed = -1;
-    shell->overview_accent_until_ms = now_ms() + OVERVIEW_ACCENT_MS;
+    current = now_ms();
+    shell->overview_accent_until_ms = current + OVERVIEW_ACCENT_MS;
+    msys_native_system_metrics_init(&shell->system_metrics);
+    (void)msys_native_system_metrics_sample(&shell->system_metrics);
+    shell->system_metrics_next_sample_ms =
+        current + SYSTEM_METRICS_INTERVAL_MS;
     /*
      * list_windows is asynchronous. Keep the opaque task-switcher unmapped
      * until its reply (or error/timeout) so the policy can capture the real
@@ -4269,7 +4378,7 @@ static void request_recents_resources(native_shell *shell)
 
 static void request_processes(native_shell *shell)
 {
-    char payload[64];
+    char payload[96];
     shell->processes_state = CATALOG_LOADING;
     shell->process_count = 0u;
     shell->process_scroll = 0;
@@ -4280,7 +4389,7 @@ static void request_processes(native_shell *shell)
     (void)snprintf(
         payload,
         sizeof(payload),
-        "{\"include_system\":%s,\"limit\":64}",
+        "{\"scope\":\"all-msys\",\"include_system\":%s,\"limit\":64}",
         shell->process_include_system != 0 ? "true" : "false"
     );
     if (shell->recents_mapped != 0 && shell->process_view != 0) {
@@ -5894,6 +6003,33 @@ static void redraw_process_content(native_shell *shell)
     end_clip(shell);
 }
 
+static void redraw_recents_system_metrics(native_shell *shell)
+{
+    XWindowAttributes attributes;
+    int top = 0;
+    int right = 0;
+    int bottom = 0;
+    int width;
+    if (shell->recents_mapped == 0 ||
+        !XGetWindowAttributes(shell->display, shell->recents, &attributes)) {
+        return;
+    }
+    recents_surface_insets(
+        shell,
+        attributes.width,
+        attributes.height,
+        &top,
+        &right,
+        &bottom
+    );
+    width = attributes.width - right - 210;
+    if (width < 1) return;
+    begin_clip(shell, 14, top + 22, width, 26);
+    draw_recents(shell);
+    end_clip(shell);
+    (void)bottom;
+}
+
 static int present_process_drag_frame(
     native_shell *shell,
     uint64_t current,
@@ -7116,6 +7252,28 @@ static void periodic(native_shell *shell)
     size_t position;
     int visual_change = 0;
     if (
+        shell->recents_mapped != 0 &&
+        shell->system_metrics_next_sample_ms != 0u &&
+        current >= shell->system_metrics_next_sample_ms
+    ) {
+        unsigned int old_cpu = shell->system_metrics.cpu_percent;
+        unsigned int old_memory = shell->system_metrics.memory_percent;
+        int old_cpu_available = shell->system_metrics.cpu_available;
+        int old_memory_available = shell->system_metrics.memory_available;
+        (void)msys_native_system_metrics_sample(&shell->system_metrics);
+        shell->system_metrics_next_sample_ms =
+            current + SYSTEM_METRICS_INTERVAL_MS;
+        if (
+            old_cpu != shell->system_metrics.cpu_percent ||
+            old_memory != shell->system_metrics.memory_percent ||
+            old_cpu_available != shell->system_metrics.cpu_available ||
+            old_memory_available != shell->system_metrics.memory_available
+        ) {
+            redraw_recents_system_metrics(shell);
+            visual_change = 1;
+        }
+    }
+    if (
         shell->supervised != 0 &&
         shell->wifi_next_refresh_ms != 0u &&
         current >= shell->wifi_next_refresh_ms
@@ -7222,7 +7380,7 @@ static void periodic(native_shell *shell)
                 shell, attributes.width, attributes.height,
                 &top, &right, &bottom
             );
-            begin_clip(shell, 10, top + 42, 112, 10);
+            begin_clip(shell, 10, top + 47, 112, 10);
             draw_recents(shell);
             end_clip(shell);
             visual_change = 1;
@@ -7240,7 +7398,7 @@ static void periodic(native_shell *shell)
                 shell, attributes.width, attributes.height,
                 &top, &right, &bottom
             );
-            begin_clip(shell, 10, top + 42, 112, 10);
+            begin_clip(shell, 10, top + 47, 112, 10);
             draw_recents(shell);
             end_clip(shell);
             visual_change = 1;
@@ -7472,6 +7630,7 @@ int main(int argc, char **argv)
     shell.controls_pressed = -1;
     shell.controls_pressed_zone = -1;
     shell.audio_volume_percent = -1;
+    msys_native_system_metrics_init(&shell.system_metrics);
     msys_native_notification_history_init(
         &shell.notifications, notification_limit_from_environment()
     );

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -633,7 +634,7 @@ def debug_foreign_release_digest(
         x11.XCloseDisplay(display)
 
 
-def window_pixel_digest(title: str) -> bytes:
+def window_xwd(title: str) -> bytes:
     result = subprocess.run(
         [
             "xwd",
@@ -646,7 +647,53 @@ def window_pixel_digest(title: str) -> bytes:
         check=True,
         capture_output=True,
     )
-    return hashlib.sha256(result.stdout).digest()
+    return result.stdout
+
+
+def window_pixel_digest(title: str) -> bytes:
+    return hashlib.sha256(window_xwd(title)).digest()
+
+
+def window_region_digest(
+    title: str,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> bytes:
+    data = window_xwd(title)
+    if len(data) < 100:
+        raise RuntimeError("truncated XWD header")
+    header = struct.unpack(">25I", data[:100])
+    header_size = header[0]
+    pixmap_format = header[2]
+    image_width = header[4]
+    image_height = header[5]
+    bits_per_pixel = header[11]
+    bytes_per_line = header[12]
+    color_count = header[19]
+    pixel_bytes = (bits_per_pixel + 7) // 8
+    image_offset = header_size + color_count * 12
+    if (
+        pixmap_format != 2
+        or pixel_bytes < 1
+        or x < 0
+        or y < 0
+        or width < 1
+        or height < 1
+        or x + width > image_width
+        or y + height > image_height
+        or image_offset + bytes_per_line * image_height > len(data)
+    ):
+        raise RuntimeError(
+            f"unsupported XWD region {(x, y, width, height)} "
+            f"for {(image_width, image_height, bits_per_pixel)}"
+        )
+    digest = hashlib.sha256()
+    for row in range(y, y + height):
+        start = image_offset + row * bytes_per_line + x * pixel_bytes
+        digest.update(data[start:start + width * pixel_bytes])
+    return digest.digest()
 
 
 def wait_clock_slot_damage(timeout: float = 2.2) -> dict[str, int | str]:
@@ -1110,6 +1157,15 @@ def main() -> int:
                     "title": "External terminal",
                     "identity": "terminal",
                 },
+                {
+                    "component": "org.msys.input.touch:input-method",
+                    "id": "msys.x11-window.v1:300:1",
+                    "title": "Touch input method",
+                    "identity": "org.msys.input.touch",
+                    "kind": "overlay",
+                    "role": "input-method",
+                    "state": "hidden",
+                },
             ],
         }
         reply_recents_snapshot(parent, windows_request, window_snapshot)
@@ -1439,6 +1495,13 @@ def main() -> int:
                 }
                 for index in range(12)
             ]
+            process_rows[3].update({
+                "name": "Touch input method",
+                "component": "org.msys.input.touch:input-method",
+                "component_state": "ready",
+                "runtime": "python",
+                "lifecycle": "on-demand",
+            })
 
             # The header action enters the read-only process page and requests
             # exactly the default MSYS-only snapshot.
@@ -1452,6 +1515,7 @@ def main() -> int:
                 parent, outbound_call("msys.core", "list_processes")
             )
             if process_request.get("payload") != {
+                "scope": "all-msys",
                 "include_system": False,
                 "limit": 64,
             }:
@@ -1467,6 +1531,50 @@ def main() -> int:
             time.sleep(0.08)
             if not window_is_viewable("MSYS Recents"):
                 raise RuntimeError("process page did not remain visible")
+
+            # The first CPU delta becomes available one second after Overview
+            # opens.  Only its compact header summary may change; the process
+            # viewport must remain byte-identical.
+            recents_x, recents_y, recents_width, recents_height = window_frame(
+                "MSYS Recents"
+            )
+            chrome_x, chrome_y, chrome_width, chrome_height = window_frame(
+                "MSYS Chrome"
+            )
+            top_inset = 0
+            if (
+                chrome_x < recents_x + recents_width
+                and chrome_x + chrome_width > recents_x
+            ):
+                top_inset = max(
+                    0,
+                    min(recents_height, chrome_y + chrome_height - recents_y),
+                )
+            metrics_width = recents_width - 210
+            content_y = top_inset + 58
+            metrics_before = window_region_digest(
+                "MSYS Recents", 14, top_inset + 22, metrics_width, 26
+            )
+            content_before = window_region_digest(
+                "MSYS Recents",
+                0,
+                content_y,
+                recents_width,
+                max(1, recents_height - content_y),
+            )
+            time.sleep(1.15)
+            if window_region_digest(
+                "MSYS Recents", 14, top_inset + 22, metrics_width, 26
+            ) == metrics_before:
+                raise RuntimeError("Overview CPU/MEM summary did not update")
+            if window_region_digest(
+                "MSYS Recents",
+                0,
+                content_y,
+                recents_width,
+                max(1, recents_height - content_y),
+            ) != content_before:
+                raise RuntimeError("system metrics repainted outside its header bounds")
 
             # Rows are intentionally read-only: tapping one neither exits the
             # page nor sends stop/start calls.
@@ -1500,6 +1608,7 @@ def main() -> int:
                 parent, outbound_call("msys.core", "list_processes")
             )
             if system_process_request.get("payload") != {
+                "scope": "all-msys",
                 "include_system": True,
                 "limit": 64,
             }:
