@@ -25,7 +25,7 @@ trap cleanup EXIT INT TERM
 sleep 0.2
 DISPLAY="$display" MSYS_LOCALE=zh_CN.UTF-8 \
     bin/msys-shell-lvgl --output spi --ui-dir files/share/ui/shell \
-    --run-ms 1600 2>"$shell_log" &
+    --run-ms 3200 2>"$shell_log" &
 shell_pid=$!
 
 attempt=0
@@ -76,11 +76,30 @@ check_geometry "$chrome" 320 42 0 0
 check_geometry "$navigation" 320 42 0 438
 check_geometry "$recents" 320 396 0 42
 
-# The clock is allowed to damage its own label once per second.  The launcher
-# has no idle timer, so its last exact LVGL invalid area must remain unchanged.
-sleep 0.45
-first=$(DISPLAY="$display" xprop -id "$launcher" _MSYS_LVGL_LAST_FLUSH)
-sleep 0.30
+# Mapping can produce one late Expose after the window first becomes visible.
+# Wait for that finite startup damage to settle, then observe longer than one
+# clock period. The clock may damage Chrome, never the launcher surface.
+attempt=0
+stable=0
+previous=$(DISPLAY="$display" xprop -id "$launcher" _MSYS_LVGL_LAST_FLUSH)
+while [ "$attempt" -lt 10 ]; do
+    sleep 0.10
+    current=$(DISPLAY="$display" xprop -id "$launcher" _MSYS_LVGL_LAST_FLUSH)
+    if [ "$current" = "$previous" ]; then
+        stable=$((stable + 1))
+        [ "$stable" -ge 3 ] && break
+    else
+        stable=0
+    fi
+    previous=$current
+    attempt=$((attempt + 1))
+done
+[ "$stable" -ge 3 ] || {
+    echo "lvgl-shell-probe: launcher did not settle after mapping" >&2
+    exit 1
+}
+first=$current
+sleep 1.10
 second=$(DISPLAY="$display" xprop -id "$launcher" _MSYS_LVGL_LAST_FLUSH)
 [ "$first" = "$second" ] || {
     echo "lvgl-shell-probe: idle launcher kept refreshing" >&2
