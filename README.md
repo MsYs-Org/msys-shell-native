@@ -2,10 +2,11 @@
 
 Current source version: `0.6.6`.
 
-Version 0.6.6 explicitly applies the vertical flex flow to the instantiated
-Launcher document root. LVGL 9.3 parses the XML component but does not apply the
-root `<view>` flex-flow attribute, which had placed the grid at the right edge.
-The Xvfb probe now renders real test tiles and checks their geometry and pixels.
+Version 0.6.6 explicitly applies the vertical flex flow to the named
+`launcher_root` view inside the instantiated XML component. The document API
+can expose a component wrapper above that view; applying layout to the wrapper
+does not arrange the header/grid/status children and had placed the grid at the
+right edge. The Xvfb probe renders real test tiles and checks geometry/pixels.
 Pixel verification uses a repository-built Xlib `XGetImage` helper and does not
 require `xwd`, ImageMagick, Python, or any host package installation.
 

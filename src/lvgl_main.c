@@ -884,6 +884,14 @@ static lv_obj_t *make_fallback_icon(shell_view *view, lv_obj_t *parent,
     return icon;
 }
 
+static lv_obj_t *launcher_xml_root(shell_view *view)
+{
+    lv_obj_t *root = view_object(view, "launcher_root");
+    if(root == NULL && view != NULL)
+        root = msys_ui_document_root(view->document);
+    return root;
+}
+
 static void launcher_resolve_grid_geometry(shell_view *view, lv_obj_t *root,
                                            lv_obj_t *grid)
 {
@@ -892,10 +900,9 @@ static void launcher_resolve_grid_geometry(shell_view *view, lv_obj_t *root,
     int32_t available;
     int32_t row_gap;
     if(root == NULL || grid == NULL || header == NULL || status == NULL) return;
-    /* LVGL 9.3's XML component root does not currently apply the <view>
-     * flex_flow attribute to the instantiated object. Keep the declarative
-     * value for forward compatibility, but enforce the role's required
-     * vertical structure at its ownership boundary. */
+    /* lv_xml_create can return a component instance wrapper. The named view
+     * owns header/grid/status, so enforce its required vertical structure at
+     * the Launcher boundary after resolving that actual XML object. */
     lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
     lv_obj_update_layout(root);
     row_gap = lv_obj_get_style_pad_row(root, LV_PART_MAIN);
@@ -943,7 +950,7 @@ static void render_launcher(shell_state *shell)
 {
     shell_view *view = &shell->views[SURFACE_LAUNCHER];
     lv_obj_t *grid = view_object(view, "app_grid");
-    lv_obj_t *root = msys_ui_document_root(view->document);
+    lv_obj_t *root = launcher_xml_root(view);
     size_t indices[MSYS_NATIVE_LAUNCHER_MAX_ITEMS];
     size_t count;
     size_t slot;

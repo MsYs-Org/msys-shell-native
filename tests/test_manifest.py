@@ -126,6 +126,8 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("msys_native_launcher_layout_reconcile", render)
         self.assertIn("lv_button_create(grid)", render)
         self.assertIn("launcher_resolve_grid_geometry", source)
+        self.assertIn('view_object(view, "launcher_root")', source)
+        self.assertIn("root = msys_ui_document_root(view->document)", source)
         self.assertIn("lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN)", source)
         self.assertIn("lv_obj_set_flex_grow(grid, 0)", source)
         self.assertIn("launcher geometry apps=%zu", source)
