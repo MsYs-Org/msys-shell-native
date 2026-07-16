@@ -9,10 +9,11 @@
       <lv_obj width="1" height="100%" flex_grow="1" flex_flow="column"
               scrollable="false" style_bg_opa="0%" style_border_width="0"
               style_pad_all="0" style_pad_row="1">
-        <lv_label name="launcher_title" text="应用" style_text_font="msys_20"
-                  style_text_color="#182033"/>
-        <lv_label name="launcher_hint" text="轻触启动，长按编辑"
-                  style_text_font="msys_14" style_text_color="#69758a"/>
+        <lv_label name="launcher_title" text="应用" width="100%" long_mode="dot"
+                  style_text_font="msys_20" style_text_color="#182033"/>
+        <lv_label name="launcher_hint" text="轻触启动，长按编辑" width="100%"
+                  long_mode="dot" style_text_font="msys_14"
+                  style_text_color="#69758a"/>
       </lv_obj>
       <lv_obj name="page_navigation" width="112" height="40" flex_flow="row"
               scrollable="false" style_bg_opa="0%" style_border_width="0"
