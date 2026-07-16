@@ -1,6 +1,6 @@
 # MSYS Native Shell
 
-Current source version: `0.6.1`.
+Current source version: `0.6.2`.
 
 Version 0.6.1 connects the LVGL preview Launcher to the same persisted
 `msys.shell-preferences.v1` and `launcher-layout.v1` contracts as the Xlib
