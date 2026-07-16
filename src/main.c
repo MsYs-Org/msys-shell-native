@@ -5,6 +5,7 @@
 #include "msys_shell_native/catalog.h"
 #include "msys_shell_native/image.h"
 #include "msys_shell_native/model.h"
+#include "msys_shell_native/notification.h"
 #include "msys_shell_native/preferences.h"
 #include "shell_catalog.h"
 
@@ -26,7 +27,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.3.20"
+#define APP_VERSION "0.3.21"
 #define NAV_FEEDBACK_MS 260u
 #define NAV_INTERACTION_MAX_MS 4000u
 #define NAV_BUTTON_RELEASE_SLOP 8
@@ -51,6 +52,10 @@
 #define WIFI_REFRESH_INTERVAL_MS 10000u
 #define WIFI_STATE_TIMEOUT_MS 5000u
 #define DRAG_FRAME_MS 80u
+#define NOTIFICATION_HEADER_HEIGHT 68
+#define NOTIFICATION_ROW_HEIGHT 82
+#define NOTIFICATION_ROW_GAP 8
+#define NOTIFICATION_DRAG_THRESHOLD 8
 
 enum catalog_state {
     CATALOG_LOADING = 0,
@@ -69,7 +74,6 @@ enum pending_kind {
     PENDING_TASK_ACTIVATE,
     PENDING_TASK_CLOSE,
     PENDING_NAVIGATION,
-    PENDING_NOTIFICATION_CENTER,
     PENDING_SETTINGS_PANEL,
     PENDING_WIFI_INVENTORY,
     PENDING_WIFI_STATE,
@@ -201,6 +205,7 @@ typedef struct native_shell {
     Window chrome;
     Window navigation;
     Window recents;
+    Window notification_center;
     Window controls;
     Window launch_transition;
     Window toast;
@@ -226,6 +231,15 @@ typedef struct native_shell {
     int running;
     int recents_visible;
     int recents_mapped;
+    int notification_center_visible;
+    int notification_pointer_active;
+    int notification_dragging;
+    int notification_pressed;
+    int notification_drag_start_y;
+    int notification_drag_start_scroll;
+    int notification_scroll;
+    int notification_presented_scroll;
+    uint64_t notification_redraw_at_ms;
     int controls_visible;
     int launch_transition_visible;
     int toast_visible;
@@ -324,6 +338,8 @@ typedef struct native_shell {
     int navigation_height;
     int recents_width;
     int recents_height;
+    int notification_center_width;
+    int notification_center_height;
     int controls_width;
     int controls_height;
     int launch_transition_width;
@@ -333,6 +349,7 @@ typedef struct native_shell {
     int toast_animation_frame;
     native_image_cache app_icons[MSYS_NATIVE_MAX_APPS];
     native_image_cache task_previews[MSYS_NATIVE_MAX_TASKS];
+    msys_native_notification_history notifications;
     pending_call pending[MAX_PENDING_CALLS];
     msys_native_preferences preferences;
     char preferences_path[MSYS_NATIVE_PREFERENCES_PATH_CAPACITY];
@@ -348,6 +365,7 @@ static void activate_app(native_shell *shell, size_t index);
 static void activate_task(native_shell *shell, size_t index);
 static void close_task(native_shell *shell, size_t index);
 static void draw_launcher(native_shell *shell);
+static void draw_notification_center(native_shell *shell);
 static void draw_navigation_action_damage(
     native_shell *shell,
     enum msys_native_navigation_action action
@@ -384,6 +402,28 @@ static uint64_t now_ms(void)
         return 0u;
     }
     return value;
+}
+
+static uint64_t realtime_ms(void)
+{
+    struct timespec value;
+    if (clock_gettime(CLOCK_REALTIME, &value) != 0) return 0u;
+    return (uint64_t)value.tv_sec * 1000u + (uint64_t)value.tv_nsec / 1000000u;
+}
+
+static size_t notification_limit_from_environment(void)
+{
+    const char *raw = getenv("MSYS_NOTIFICATION_HISTORY_LIMIT");
+    char *end = NULL;
+    unsigned long value;
+    if (!raw || !*raw) return MSYS_NATIVE_MAX_NOTIFICATIONS;
+    errno = 0;
+    value = strtoul(raw, &end, 10);
+    if (errno || !end || *end || value == 0u) {
+        return MSYS_NATIVE_MAX_NOTIFICATIONS;
+    }
+    return value > MSYS_NATIVE_MAX_NOTIFICATIONS
+        ? MSYS_NATIVE_MAX_NOTIFICATIONS : (size_t)value;
 }
 
 static int animation_frame_limit(int normal_frames)
@@ -2728,6 +2768,223 @@ static void draw_controls(native_shell *shell)
     (void)right;
 }
 
+static int notification_content_height(const native_shell *shell)
+{
+    size_t count = shell->notifications.count;
+    if (count == 0u) return 0;
+    return (int)count * (NOTIFICATION_ROW_HEIGHT + NOTIFICATION_ROW_GAP) -
+        NOTIFICATION_ROW_GAP;
+}
+
+static int notification_viewport_height(int height)
+{
+    int value = height - NOTIFICATION_HEADER_HEIGHT - 12;
+    return value > 1 ? value : 1;
+}
+
+static void notification_plain_text(
+    const char *value,
+    char *output,
+    size_t capacity
+)
+{
+    size_t index = 0u;
+    if (!output || capacity == 0u) return;
+    if (!value) value = "";
+    while (*value && index + 1u < capacity) {
+        char byte = *value++;
+        output[index++] = byte == '\n' || byte == '\r' || byte == '\t'
+            ? ' ' : byte;
+    }
+    output[index] = '\0';
+}
+
+static void notification_time_text(
+    const msys_native_notification *item,
+    char *output,
+    size_t capacity
+)
+{
+    time_t seconds;
+    struct tm local;
+    if (!item || !output || capacity == 0u) return;
+    seconds = (time_t)(item->timestamp_ms / 1000u);
+    if (localtime_r(&seconds, &local) == NULL ||
+        strftime(output, capacity, "%H:%M", &local) == 0u) {
+        (void)snprintf(output, capacity, "--:--");
+    }
+}
+
+static void draw_notification_center(native_shell *shell)
+{
+    XWindowAttributes attributes;
+    int viewport;
+    int content;
+    size_t index;
+    char count[32];
+    if (!XGetWindowAttributes(
+        shell->display, shell->notification_center, &attributes
+    )) return;
+    viewport = notification_viewport_height(attributes.height);
+    content = notification_content_height(shell);
+    shell->notification_scroll = msys_native_scroll_clamp(
+        shell->notification_scroll, content, viewport
+    );
+    set_foreground(shell, shell->surface_variant);
+    XFillRectangle(
+        shell->display,
+        shell->notification_center,
+        shell->gc,
+        0,
+        0,
+        (unsigned int)attributes.width,
+        (unsigned int)attributes.height
+    );
+    set_foreground(shell, shell->surface);
+    XFillRectangle(
+        shell->display,
+        shell->notification_center,
+        shell->gc,
+        0,
+        0,
+        (unsigned int)attributes.width,
+        NOTIFICATION_HEADER_HEIGHT
+    );
+    draw_text(
+        shell, shell->notification_center, 14, 30,
+        tr(shell, "notification.title"), shell->foreground
+    );
+    (void)snprintf(count, sizeof(count), "%zu", shell->notifications.count);
+    draw_text(
+        shell, shell->notification_center, 14, 53,
+        count, shell->muted
+    );
+    fill_rounded(
+        shell,
+        shell->notification_center,
+        attributes.width - 150,
+        13,
+        72u,
+        40u,
+        14u,
+        shell->notification_pressed == -3 ? shell->accent_soft : shell->surface_variant
+    );
+    draw_text_centered_in_rect(
+        shell,
+        shell->notification_center,
+        attributes.width - 150,
+        13,
+        72,
+        40,
+        tr(shell, "notification.clear"),
+        shell->foreground
+    );
+    fill_rounded(
+        shell,
+        shell->notification_center,
+        attributes.width - 68,
+        13,
+        54u,
+        40u,
+        14u,
+        shell->notification_pressed == -2 ? shell->accent_soft : shell->surface_variant
+    );
+    draw_text_centered_in_rect(
+        shell,
+        shell->notification_center,
+        attributes.width - 68,
+        13,
+        54,
+        40,
+        tr(shell, "notification.close"),
+        shell->foreground
+    );
+    if (shell->notifications.count == 0u) {
+        draw_text_centered_in_rect(
+            shell,
+            shell->notification_center,
+            12,
+            NOTIFICATION_HEADER_HEIGHT,
+            attributes.width - 24,
+            viewport,
+            tr(shell, "notification.empty"),
+            shell->muted
+        );
+    }
+    for (index = 0u; index < shell->notifications.count; index++) {
+        const msys_native_notification *item =
+            msys_native_notification_newest(&shell->notifications, index);
+        int x = 12;
+        int y = NOTIFICATION_HEADER_HEIGHT +
+            (int)index * (NOTIFICATION_ROW_HEIGHT + NOTIFICATION_ROW_GAP) -
+            shell->notification_scroll;
+        int width = attributes.width - 24;
+        char time_text[16];
+        char message[MSYS_NATIVE_NOTIFICATION_MESSAGE_CAPACITY];
+        const char *heading;
+        if (!item || y + NOTIFICATION_ROW_HEIGHT <= NOTIFICATION_HEADER_HEIGHT ||
+            y >= attributes.height) continue;
+        fill_rounded(
+            shell,
+            shell->notification_center,
+            x,
+            y,
+            (unsigned int)width,
+            NOTIFICATION_ROW_HEIGHT,
+            14u,
+            shell->surface
+        );
+        heading = item->title[0] ? item->title : item->message;
+        notification_plain_text(item->message, message, sizeof(message));
+        notification_time_text(item, time_text, sizeof(time_text));
+        draw_text_ellipsized(
+            shell,
+            shell->notification_center,
+            x + 12,
+            y + 24,
+            width - 74,
+            heading,
+            shell->foreground
+        );
+        draw_text(
+            shell,
+            shell->notification_center,
+            x + width - 52,
+            y + 24,
+            time_text,
+            shell->muted
+        );
+        draw_text_ellipsized(
+            shell,
+            shell->notification_center,
+            x + 12,
+            y + 49,
+            width - 24,
+            message,
+            shell->foreground
+        );
+        draw_text_ellipsized(
+            shell,
+            shell->notification_center,
+            x + 12,
+            y + 71,
+            width - 24,
+            item->source[0] ? item->source : item->topic,
+            shell->muted
+        );
+    }
+    draw_scroll_indicator(
+        shell,
+        shell->notification_center,
+        attributes.width - 7,
+        NOTIFICATION_HEADER_HEIGHT,
+        viewport,
+        content,
+        viewport,
+        shell->notification_scroll
+    );
+}
+
 static void draw_toast(native_shell *shell)
 {
     XWindowAttributes attributes;
@@ -2902,6 +3159,8 @@ static void redraw(native_shell *shell, Window window)
         draw_navigation(shell);
     } else if (window == shell->recents) {
         draw_recents(shell);
+    } else if (window == shell->notification_center) {
+        draw_notification_center(shell);
     } else if (window == shell->controls) {
         draw_controls(shell);
     } else if (window == shell->launch_transition) {
@@ -3021,6 +3280,18 @@ static int initialize_x11(native_shell *shell)
         "task-switcher",
         1
     );
+    shell->notification_center = create_window(
+        shell,
+        0,
+        0,
+        (unsigned int)shell->layout.width,
+        (unsigned int)shell->layout.height,
+        shell->surface_variant,
+        "MSYS Notification Center",
+        "org.msys.shell.native.notification-center",
+        "notification-center",
+        1
+    );
     shell->controls = create_window(
         shell,
         0,
@@ -3055,6 +3326,12 @@ static int initialize_x11(native_shell *shell)
     {
         XSetWindowAttributes overlay_attributes;
         overlay_attributes.override_redirect = True;
+        XChangeWindowAttributes(
+            shell->display,
+            shell->notification_center,
+            CWOverrideRedirect,
+            &overlay_attributes
+        );
         XChangeWindowAttributes(
             shell->display, shell->controls, CWOverrideRedirect, &overlay_attributes
         );
@@ -3136,6 +3413,9 @@ static int initialize_ipc(native_shell *shell)
     }
     free(packet);
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.role.notification-presenter");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.notification.post");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.session.preferences.changed");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.timezone.changed");
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.display.output_recovered");
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.role.navigation-bar");
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.role.system-chrome");
@@ -3149,7 +3429,7 @@ static int initialize_ipc(native_shell *shell)
     (void)msys_mipc_send_event_json(
         &shell->ipc,
         "msys.role.ready",
-        "{\"role\":\"native-shell\",\"roles\":[\"launcher\",\"system-chrome\",\"navigation-bar\",\"task-switcher\",\"notification-presenter\"]}"
+        "{\"role\":\"native-shell\",\"roles\":[\"launcher\",\"system-chrome\",\"navigation-bar\",\"task-switcher\",\"notification-presenter\",\"notification-center\"]}"
     );
     request_apps(shell);
     request_wifi_inventory(shell);
@@ -3186,6 +3466,9 @@ static void raise_system_bars(native_shell *shell)
 {
     XRaiseWindow(shell->display, shell->chrome);
     XRaiseWindow(shell->display, shell->navigation);
+    if (shell->notification_center_visible != 0) {
+        XRaiseWindow(shell->display, shell->notification_center);
+    }
     if (shell->toast_visible != 0) XRaiseWindow(shell->display, shell->toast);
 }
 
@@ -3244,6 +3527,20 @@ static void hide_controls(native_shell *shell)
     shell->controls_pressed = -1;
     shell->controls_pressed_zone = -1;
     XUnmapWindow(shell->display, shell->controls);
+}
+
+static void hide_notification_center(native_shell *shell)
+{
+    if (shell->notification_center_visible == 0) return;
+    shell->notification_center_visible = 0;
+    shell->notification_dragging = 0;
+    shell->notification_pressed = 0;
+    shell->notification_redraw_at_ms = 0u;
+    if (shell->notification_pointer_active != 0) {
+        shell->notification_pointer_active = 0;
+        XUngrabPointer(shell->display, CurrentTime);
+    }
+    XUnmapWindow(shell->display, shell->notification_center);
 }
 
 static void show_launch_transition(native_shell *shell, size_t index)
@@ -3346,6 +3643,7 @@ static void show_controls(native_shell *shell)
 static void hide_overlays(native_shell *shell, int restore_task)
 {
     hide_recents(shell, restore_task);
+    hide_notification_center(shell);
     hide_controls(shell);
     hide_launch_transition(shell);
     hide_toast(shell);
@@ -3387,20 +3685,32 @@ static void show_toast(native_shell *shell, const char *message)
 
 static void show_notification_center(native_shell *shell)
 {
-    if (pending_has_kind(shell, PENDING_NOTIFICATION_CENTER) != 0) return;
+    if (shell->notification_center_visible != 0) {
+        XRaiseWindow(shell->display, shell->notification_center);
+        XFlush(shell->display);
+        return;
+    }
     hide_launch_transition(shell);
+    hide_recents(shell, 0);
     hide_controls(shell);
-    if (send_async(
-        shell,
-        PENDING_NOTIFICATION_CENTER,
-        0u,
-        "role:notification-center",
-        "show",
-        "{}",
-        6000u,
-        0
-    ) == 0u) {
-        show_toast(shell, tr(shell, "error.notification_center_unavailable"));
+    hide_toast(shell);
+    shell->notification_center_visible = 1;
+    shell->notification_scroll = 0;
+    shell->notification_presented_scroll = 0;
+    shell->notification_dragging = 0;
+    shell->notification_pressed = 0;
+    XMapRaised(shell->display, shell->notification_center);
+    draw_notification_center(shell);
+    XFlush(shell->display);
+}
+
+static void toggle_notification_center(native_shell *shell)
+{
+    if (shell->notification_center_visible != 0) {
+        hide_notification_center(shell);
+        XFlush(shell->display);
+    } else {
+        show_notification_center(shell);
     }
 }
 
@@ -4318,12 +4628,95 @@ static int payload_task_index(
     return 0;
 }
 
+static int handle_notification_center_call(
+    native_shell *shell,
+    uint64_t request_id,
+    const char *method,
+    const char *payload
+)
+{
+    char response[RESPONSE_CAPACITY];
+    size_t requested = shell->notifications.limit;
+    size_t removed;
+    uint64_t raw_limit = 0u;
+    const char *raw = NULL;
+    size_t raw_length = 0u;
+    if (strcmp(method, "show") == 0) {
+        show_notification_center(shell);
+    } else if (strcmp(method, "hide") == 0) {
+        hide_notification_center(shell);
+    } else if (strcmp(method, "toggle") == 0) {
+        toggle_notification_center(shell);
+    } else if (strcmp(method, "clear") == 0) {
+        removed = msys_native_notification_clear(&shell->notifications);
+        shell->notification_scroll = 0;
+        shell->notification_presented_scroll = 0;
+        if (shell->notification_center_visible != 0) {
+            draw_notification_center(shell);
+        }
+        (void)snprintf(
+            response,
+            sizeof(response),
+            "{\"removed\":%zu,\"count\":0,\"visible\":%s}",
+            removed,
+            shell->notification_center_visible != 0 ? "true" : "false"
+        );
+        (void)msys_mipc_send_return_json(&shell->ipc, request_id, response);
+        return 1;
+    } else if (strcmp(method, "list") == 0) {
+        if (msys_mipc_json_get_raw(
+            payload, "limit", &raw, &raw_length
+        ) == MSYS_MIPC_OK) {
+            if (msys_mipc_json_get_u64(
+                payload, "limit", &raw_limit
+            ) != MSYS_MIPC_OK) {
+                (void)msys_mipc_send_error(
+                    &shell->ipc,
+                    request_id,
+                    "BAD_REQUEST",
+                    "limit must be a non-negative integer"
+                );
+                return 1;
+            }
+            requested = raw_limit > shell->notifications.limit
+                ? shell->notifications.limit : (size_t)raw_limit;
+        }
+        if (!msys_native_notification_list_json(
+            &shell->notifications,
+            requested,
+            shell->notification_center_visible,
+            response,
+            sizeof(response)
+        )) {
+            (void)msys_mipc_send_error(
+                &shell->ipc, request_id, "RESPONSE_TOO_LARGE", method
+            );
+        } else {
+            (void)msys_mipc_send_return_json(&shell->ipc, request_id, response);
+        }
+        return 1;
+    } else {
+        (void)msys_mipc_send_error(&shell->ipc, request_id, "NO_METHOD", method);
+        return 1;
+    }
+    (void)snprintf(
+        response,
+        sizeof(response),
+        "{\"visible\":%s,\"count\":%zu}",
+        shell->notification_center_visible != 0 ? "true" : "false",
+        shell->notifications.count
+    );
+    (void)msys_mipc_send_return_json(&shell->ipc, request_id, response);
+    return 1;
+}
+
 static void handle_call(native_shell *shell, const char *packet)
 {
     uint64_t request_id = 0u;
     char method[80];
     char payload[2048];
     char message[192];
+    char logical_target[MSYS_NATIVE_COMPONENT_CAPACITY] = "";
     int has_message;
     enum msys_native_method_action action;
     if (
@@ -4339,6 +4732,19 @@ static void handle_call(native_shell *shell, const char *packet)
         message,
         sizeof(message)
     );
+    (void)msys_mipc_json_get_string(
+        packet,
+        "logical_target",
+        logical_target,
+        sizeof(logical_target),
+        NULL
+    );
+    if (strcmp(logical_target, "role:notification-center") == 0) {
+        (void)handle_notification_center_call(
+            shell, request_id, method, payload
+        );
+        return;
+    }
     if (strcmp(method, "refresh_apps") == 0) {
         request_apps(shell);
         (void)msys_mipc_send_return_json(
@@ -4681,8 +5087,6 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
             shell->nav_feedback = -1;
             shell->nav_feedback_until_ms = now_ms() + NAV_FEEDBACK_MS;
             draw_navigation_action_damage(shell, shell->nav_feedback_action);
-        } else if (pending.kind == PENDING_NOTIFICATION_CENTER) {
-            show_toast(shell, tr(shell, "error.notification_center_unavailable"));
         } else if (pending.kind == PENDING_SETTINGS_PANEL) {
             show_toast(shell, tr(shell, "error.settings_unavailable"));
         } else if (
@@ -4850,8 +5254,6 @@ static void handle_reply(native_shell *shell, const char *packet, const char *ty
         shell->nav_feedback_until_ms = now_ms() + NAV_FEEDBACK_MS;
         draw_navigation_action_damage(shell, shell->nav_feedback_action);
         break;
-    case PENDING_NOTIFICATION_CENTER:
-        break;
     case PENDING_SETTINGS_PANEL:
         break;
     case PENDING_WIFI_INVENTORY:
@@ -4919,21 +5321,86 @@ static const char *installed_app_name(
     return NULL;
 }
 
+static void apply_session_language(native_shell *shell, const char *payload)
+{
+    char resolved[MSYS_I18N_LOCALE_CAPACITY] = "";
+    if (
+        msys_mipc_json_get_string(
+            payload,
+            "resolved_language",
+            resolved,
+            sizeof(resolved),
+            NULL
+        ) != MSYS_MIPC_OK || !resolved[0] ||
+        strcmp(resolved, shell->locale) == 0
+    ) return;
+    (void)snprintf(shell->locale, sizeof(shell->locale), "%s", resolved);
+    begin_atomic_presentation(shell);
+    draw_launcher(shell);
+    draw_chrome(shell);
+    draw_navigation(shell);
+    if (shell->recents_mapped != 0) draw_recents(shell);
+    if (shell->controls_visible != 0) draw_controls(shell);
+    if (shell->notification_center_visible != 0) {
+        draw_notification_center(shell);
+    }
+    if (shell->toast_visible != 0) draw_toast(shell);
+    end_atomic_presentation(shell);
+    request_apps(shell);
+}
+
 static void handle_event(native_shell *shell, const char *packet)
 {
     char topic[128];
     char payload[RESPONSE_CAPACITY];
     char message[192];
+    char source[MSYS_NATIVE_NOTIFICATION_SOURCE_CAPACITY] = "";
     if (
         msys_mipc_json_get_string(packet, "topic", topic, sizeof(topic), NULL) != MSYS_MIPC_OK
     ) {
         return;
     }
     if (
-        strcmp(topic, "msys.role.notification-presenter") == 0 &&
-        payload_message(packet, payload, sizeof(payload), message, sizeof(message)) != 0
+        strcmp(topic, "msys.role.notification-presenter") == 0 ||
+        strcmp(topic, "msys.notification.post") == 0
     ) {
-        show_toast(shell, message);
+        if (packet_payload(packet, payload, sizeof(payload)) == 0) return;
+        (void)msys_mipc_json_get_string(
+            packet, "source", source, sizeof(source), NULL
+        );
+        if (msys_native_notification_append(
+            &shell->notifications,
+            topic,
+            payload,
+            source,
+            realtime_ms()
+        )) {
+            if (shell->notification_center_visible != 0) {
+                shell->notification_scroll = 0;
+                shell->notification_presented_scroll = 0;
+                draw_notification_center(shell);
+            }
+            if (
+                strcmp(topic, "msys.role.notification-presenter") == 0 &&
+                shell->notification_center_visible == 0 &&
+                payload_message(
+                    packet,
+                    payload,
+                    sizeof(payload),
+                    message,
+                    sizeof(message)
+                ) != 0
+            ) {
+                show_toast(shell, message);
+            }
+        }
+    } else if (strcmp(topic, "msys.session.preferences.changed") == 0) {
+        if (packet_payload(packet, payload, sizeof(payload)) != 0) {
+            apply_session_language(shell, payload);
+        }
+    } else if (strcmp(topic, "msys.timezone.changed") == 0) {
+        tzset();
+        draw_chrome_clock_damage(shell);
     } else if (strcmp(topic, "msys.display.output_recovered") == 0) {
         (void)payload_message(packet, payload, sizeof(payload), message, sizeof(message));
         if (display_recovery_requires_notice(shell, payload) != 0) {
@@ -5060,6 +5527,9 @@ static int surface_size_changed(native_shell *shell, Window window, int width, i
     } else if (window == shell->recents) {
         stored_width = &shell->recents_width;
         stored_height = &shell->recents_height;
+    } else if (window == shell->notification_center) {
+        stored_width = &shell->notification_center_width;
+        stored_height = &shell->notification_center_height;
     } else if (window == shell->controls) {
         stored_width = &shell->controls_width;
         stored_height = &shell->controls_height;
@@ -5457,6 +5927,31 @@ static void redraw_controls_row(native_shell *shell, int index)
     end_clip(shell);
 }
 
+static int notification_header_hit(int x, int y, int width)
+{
+    if (y < 13 || y >= 53) return 0;
+    if (x >= width - 68 && x < width - 14) return -2;
+    if (x >= width - 150 && x < width - 78) return -3;
+    return 0;
+}
+
+static void redraw_notification_region(
+    native_shell *shell,
+    int y,
+    int height
+)
+{
+    XWindowAttributes attributes;
+    if (!XGetWindowAttributes(
+        shell->display, shell->notification_center, &attributes
+    )) return;
+    begin_atomic_presentation(shell);
+    begin_clip(shell, 0, y, attributes.width, height);
+    draw_notification_center(shell);
+    end_clip(shell);
+    end_atomic_presentation(shell);
+}
+
 static void handle_x_event(native_shell *shell, XEvent *event)
 {
     uint64_t current;
@@ -5498,6 +5993,10 @@ static void handle_x_event(native_shell *shell, XEvent *event)
                     (unsigned int)shell->root_width, (unsigned int)shell->root_height
                 );
                 XMoveResizeWindow(
+                    shell->display, shell->notification_center, 0, 0,
+                    (unsigned int)shell->root_width, (unsigned int)shell->root_height
+                );
+                XMoveResizeWindow(
                     shell->display, shell->controls, 0, 0,
                     (unsigned int)shell->root_width, (unsigned int)shell->root_height
                 );
@@ -5525,6 +6024,10 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         )) {
             if (
                 (event->xconfigure.window != shell->recents || shell->recents_visible != 0) &&
+                (
+                    event->xconfigure.window != shell->notification_center ||
+                    shell->notification_center_visible != 0
+                ) &&
                 (event->xconfigure.window != shell->controls || shell->controls_visible != 0) &&
                 (
                     event->xconfigure.window != shell->launch_transition ||
@@ -5538,10 +6041,138 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         event->type == ClientMessage &&
         (Atom)event->xclient.data.l[0] == shell->wm_delete
     ) {
+        if (event->xclient.window == shell->notification_center) {
+            hide_notification_center(shell);
+            return;
+        }
         shell->running = 0;
         return;
     }
-    if (event->type == ButtonPress && event->xbutton.window == shell->chrome) {
+    if (
+        event->type == ButtonPress &&
+        event->xbutton.window == shell->notification_center
+    ) {
+        XWindowAttributes attributes;
+        if (!XGetWindowAttributes(
+            shell->display, shell->notification_center, &attributes
+        )) return;
+        shell->notification_pointer_active = 1;
+        shell->notification_dragging = 0;
+        shell->notification_drag_start_y = event->xbutton.y;
+        shell->notification_drag_start_scroll = shell->notification_scroll;
+        shell->notification_presented_scroll = shell->notification_scroll;
+        shell->notification_redraw_at_ms = 0u;
+        shell->notification_pressed = notification_header_hit(
+            event->xbutton.x, event->xbutton.y, attributes.width
+        );
+        (void)XGrabPointer(
+            shell->display,
+            shell->notification_center,
+            False,
+            PointerMotionMask | ButtonReleaseMask,
+            GrabModeAsync,
+            GrabModeAsync,
+            None,
+            None,
+            CurrentTime
+        );
+        if (shell->notification_pressed != 0) {
+            redraw_notification_region(shell, 0, NOTIFICATION_HEADER_HEIGHT);
+        }
+    } else if (
+        event->type == MotionNotify &&
+        event->xmotion.window == shell->notification_center &&
+        shell->notification_pointer_active != 0
+    ) {
+        XWindowAttributes attributes;
+        int delta;
+        int requested;
+        int viewport;
+        int content;
+        if (!XGetWindowAttributes(
+            shell->display, shell->notification_center, &attributes
+        )) return;
+        delta = event->xmotion.y - shell->notification_drag_start_y;
+        if (abs(delta) > NOTIFICATION_DRAG_THRESHOLD) {
+            shell->notification_dragging = 1;
+            shell->notification_pressed = 0;
+        }
+        if (shell->notification_dragging != 0) {
+            viewport = notification_viewport_height(attributes.height);
+            content = notification_content_height(shell);
+            requested = msys_native_scroll_clamp(
+                shell->notification_drag_start_scroll - delta,
+                content,
+                viewport
+            );
+            shell->notification_scroll = requested;
+            if (
+                requested != shell->notification_presented_scroll &&
+                current >= shell->notification_redraw_at_ms
+            ) {
+                redraw_notification_region(
+                    shell, NOTIFICATION_HEADER_HEIGHT, viewport
+                );
+                shell->notification_presented_scroll = requested;
+                shell->notification_redraw_at_ms = current + DRAG_FRAME_MS;
+            }
+        }
+    } else if (
+        event->type == ButtonRelease &&
+        shell->notification_pointer_active != 0
+    ) {
+        XWindowAttributes attributes;
+        Window ignored = None;
+        int pressed = shell->notification_pressed;
+        int released = 0;
+        int local_x = event->xbutton.x;
+        int local_y = event->xbutton.y;
+        shell->notification_pointer_active = 0;
+        XUngrabPointer(shell->display, CurrentTime);
+        if (!XGetWindowAttributes(
+            shell->display, shell->notification_center, &attributes
+        )) return;
+        if (event->xbutton.window != shell->notification_center) {
+            (void)XTranslateCoordinates(
+                shell->display,
+                shell->root,
+                shell->notification_center,
+                event->xbutton.x_root,
+                event->xbutton.y_root,
+                &local_x,
+                &local_y,
+                &ignored
+            );
+        }
+        if (shell->notification_dragging == 0) {
+            released = notification_header_hit(
+                local_x, local_y, attributes.width
+            );
+        }
+        shell->notification_pressed = 0;
+        if (
+            shell->notification_scroll != shell->notification_presented_scroll
+        ) {
+            redraw_notification_region(
+                shell,
+                NOTIFICATION_HEADER_HEIGHT,
+                notification_viewport_height(attributes.height)
+            );
+        } else if (pressed != 0) {
+            redraw_notification_region(shell, 0, NOTIFICATION_HEADER_HEIGHT);
+        }
+        shell->notification_presented_scroll = shell->notification_scroll;
+        shell->notification_dragging = 0;
+        shell->notification_redraw_at_ms = 0u;
+        if (released == pressed && released == -2) {
+            hide_notification_center(shell);
+        } else if (released == pressed && released == -3) {
+            (void)msys_native_notification_clear(&shell->notifications);
+            shell->notification_scroll = 0;
+            shell->notification_presented_scroll = 0;
+            draw_notification_center(shell);
+        }
+    } else if (event->type == ButtonPress && event->xbutton.window == shell->chrome) {
         XWindowAttributes attributes;
         if (!XGetWindowAttributes(shell->display, shell->chrome, &attributes)) return;
         shell->chrome_pressed_action = chrome_action_at(
@@ -6256,7 +6887,7 @@ static void handle_x_event(native_shell *shell, XEvent *event)
         XUngrabPointer(shell->display, CurrentTime);
         draw_chrome_action_damage(shell, pressed);
         if (released == pressed) {
-            if (released == 1) show_notification_center(shell);
+            if (released == 1) toggle_notification_center(shell);
             else if (released == 2) show_controls(shell);
         }
     } else if (event->type == ButtonPress && event->xbutton.window == shell->controls) {
@@ -6543,9 +7174,6 @@ static void periodic(native_shell *shell)
             shell->nav_feedback_until_ms = current + NAV_FEEDBACK_MS;
             draw_navigation_action_damage(shell, shell->nav_feedback_action);
             visual_change = 1;
-        } else if (expired.kind == PENDING_NOTIFICATION_CENTER) {
-            show_toast(shell, tr(shell, "error.notification_center_unavailable"));
-            visual_change = 1;
         } else if (expired.kind == PENDING_SETTINGS_PANEL) {
             show_toast(shell, tr(shell, "error.settings_unavailable"));
             visual_change = 1;
@@ -6666,6 +7294,9 @@ int main(int argc, char **argv)
     shell.controls_pressed = -1;
     shell.controls_pressed_zone = -1;
     shell.audio_volume_percent = -1;
+    msys_native_notification_history_init(
+        &shell.notifications, notification_limit_from_environment()
+    );
     if (msys_i18n_locale_from_environment(shell.locale, sizeof(shell.locale)) != MSYS_I18N_OK) {
         shell.locale[0] = '\0';
     }

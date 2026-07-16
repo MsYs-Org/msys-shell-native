@@ -1,6 +1,15 @@
 # MSYS Native Shell
 
-Current source version: `0.3.20`.
+Current source version: `0.3.21`.
+
+Version 0.3.21 adds the native `notification-center` role to the existing C
+Shell process. It keeps at most 24 normalized notifications in a fixed-size
+ring, subscribes to both notification topics, and implements typed
+`show`/`hide`/`toggle`/`list`/`clear` calls. The full-screen X11 overlay has
+event-driven touch scrolling plus Clear and Close actions; it adds no process,
+poll, toolkit, continuous animation, or unbounded allocation. Live session
+language events redraw every Shell surface in place and refresh localized app
+names. Timezone events call `tzset()` and damage only the clock region.
 
 Version 0.3.20 adds a read-only background-process page inside Overview. Its
 header action stays separate from Exit, defaults to supervised non-GUI MSYS
@@ -57,6 +66,7 @@ One supervised component creates several independently identified X11 windows:
   low-memory antialiased scaling, card activation, close buttons, horizontal
   dismiss, and vertical scrolling;
 - bounded notification toast whose deadline cannot be extended by an event burst;
+- full-screen native notification history with bounded scrolling, Clear, and Close;
 - finite, damage-clipped interaction pulses for launcher cells, Recents cards,
   and the navigation pill (there is no continuous animation timer).
 
@@ -69,8 +79,8 @@ leaving enough width for a headset name or degraded reason. PCM never crosses
 mIPC.
 
 The manifest advertises only the roles actually served: `launcher`,
-`system-chrome`, `navigation-bar`, `task-switcher`, and
-`notification-presenter`. Each has priority 90. An integrating profile should
+`system-chrome`, `navigation-bar`, `task-switcher`,
+`notification-presenter`, and `notification-center`. Each has priority 90. An integrating profile should
 select the single `org.msys.shell.native:desktop-shell` component for the roles
 it wants this process to own and supervise that component once.
 
@@ -123,8 +133,10 @@ monotonic revision, atomically replace `launcher-preferences.json` below
 `MSYS_COMPONENT_STATE_DIR` (or the package-owned `MSYS_APP_STATE_DIR`), update
 launcher colour/layout/icon presentation immediately, and publish
 `msys.shell.preferences.changed`. Invalid or unpersistable changes never alter
-the in-memory state. `show({})`
-opens Recents, `show({message})` opens a toast, and `hide({})` closes both.
+the in-memory state. Calls forwarded with `logical_target=role:task-switcher`
+open Recents, `role:notification-presenter` presents a toast, and
+`role:notification-center` controls the bounded history overlay. The provider
+component target remains unchanged for older callers.
 Unknown methods return `NO_METHOD`; chooser methods return `NOT_IMPLEMENTED`
 rather than false success.
 
@@ -139,8 +151,9 @@ applications as part of this notification path.
 The legacy component-level manifest identity names the actual launcher X11 window
 (`org.msys.shell.native.launcher` / `msys-shell-native`). This lets Core's
 generic Home/launcher activation find the window without depending on a
-package-specific title. `x-msys-role-windows` additionally binds the launcher
-and navigation role contracts to their separate, explicit X11 surfaces.
+package-specific title. `x-msys-role-windows` additionally binds the launcher,
+navigation, and notification-center role contracts to their separate,
+explicit X11 surfaces.
 
 Shell layout is resolved independently from the component implementation.
 `MSYS_LAYOUT_PROFILE=embedded|mobile|desktop` (with `kiosk` mapped to embedded)
@@ -175,8 +188,8 @@ systemd, D-Bus, toolkit, or package manager is required.
 
 ## Deliberate boundaries
 
-- Notification history remains owned by the replaceable `notification-center`
-  role; the left chrome affordance calls it rather than duplicating storage.
+- Notification history is intentionally memory-only and bounded; persistence
+  can be added behind the same replaceable role without changing callers.
 - Quick controls route Wi-Fi, Bluetooth, and system rows into the Settings app's
   typed panels. The audio row calls the selected `audio-manager`; hardware
   policy and credentials remain in providers/Settings, not in this shell.

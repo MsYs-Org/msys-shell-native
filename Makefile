@@ -9,7 +9,8 @@ CFLAGS ?= -O2
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
 LDLIBS += $(SDK_DIR)/build/libmsys-mipc.a -lX11 -ldl
 
-SOURCES := src/main.c src/model.c src/catalog.c src/preferences.c src/image.c
+SOURCES := src/main.c src/model.c src/catalog.c src/preferences.c src/image.c \
+	src/notification.c
 OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SOURCES))
 TARGET := $(BIN_DIR)/msys-shell-native
 TEST_TARGET := $(BUILD_DIR)/test-model
@@ -17,6 +18,7 @@ CATALOG_TEST_TARGET := $(BUILD_DIR)/test-catalog
 PREFERENCES_TEST_TARGET := $(BUILD_DIR)/test-preferences
 IMAGE_TEST_TARGET := $(BUILD_DIR)/test-image
 I18N_TEST_TARGET := $(BUILD_DIR)/test-i18n
+NOTIFICATION_TEST_TARGET := $(BUILD_DIR)/test-notification
 
 .PHONY: all clean test strict sdk i18n integration-test
 
@@ -34,6 +36,7 @@ $(TARGET): $(OBJECTS) | $(BIN_DIR) sdk
 $(BUILD_DIR)/main.o: src/main.c generated/shell_catalog.h \
 	include/msys_shell_native/model.h include/msys_shell_native/catalog.h \
 	include/msys_shell_native/preferences.h include/msys_shell_native/image.h \
+	include/msys_shell_native/notification.h \
 	$(SDK_DIR)/include/msys/mipc.h $(SDK_DIR)/include/msys/i18n.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
@@ -48,6 +51,10 @@ $(BUILD_DIR)/preferences.o: src/preferences.c include/msys_shell_native/preferen
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/image.o: src/image.c include/msys_shell_native/image.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/notification.o: src/notification.c \
+	include/msys_shell_native/notification.h $(SDK_DIR)/include/msys/mipc.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(TEST_TARGET): tests/test_model.c src/model.c include/msys_shell_native/model.h | $(BUILD_DIR)
@@ -65,13 +72,19 @@ $(IMAGE_TEST_TARGET): tests/test_image.c src/image.c include/msys_shell_native/i
 $(I18N_TEST_TARGET): tests/test_i18n.c generated/shell_catalog.h | $(BUILD_DIR) sdk
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_i18n.c -o $@ $(SDK_DIR)/build/libmsys-mipc.a
 
+$(NOTIFICATION_TEST_TARGET): tests/test_notification.c src/notification.c \
+	include/msys_shell_native/notification.h | $(BUILD_DIR) sdk
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_notification.c src/notification.c \
+		-o $@ $(SDK_DIR)/build/libmsys-mipc.a
+
 test: $(TEST_TARGET) $(CATALOG_TEST_TARGET) $(PREFERENCES_TEST_TARGET) \
-	$(IMAGE_TEST_TARGET) $(I18N_TEST_TARGET)
+	$(IMAGE_TEST_TARGET) $(I18N_TEST_TARGET) $(NOTIFICATION_TEST_TARGET)
 	$(TEST_TARGET)
 	$(CATALOG_TEST_TARGET)
 	$(PREFERENCES_TEST_TARGET)
 	$(IMAGE_TEST_TARGET)
 	$(I18N_TEST_TARGET)
+	$(NOTIFICATION_TEST_TARGET)
 
 strict:
 	$(MAKE) clean

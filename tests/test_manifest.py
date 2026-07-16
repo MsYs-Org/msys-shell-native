@@ -15,9 +15,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.component = cls.document["components"][0]
 
     def test_one_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.3.20")
+        self.assertEqual(self.document["package"]["version"], "0.3.21")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.3.20"', implementation)
+        self.assertIn('#define APP_VERSION "0.3.21"', implementation)
         self.assertEqual(len(self.document["components"]), 1)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -35,6 +35,7 @@ class NativeShellManifestTests(unittest.TestCase):
                 "navigation-bar": 90,
                 "task-switcher": 90,
                 "notification-presenter": 90,
+                "notification-center": 90,
             },
         )
         self.assertTrue(all(item["exclusive"] for item in self.component["provides"]))
@@ -46,7 +47,7 @@ class NativeShellManifestTests(unittest.TestCase):
         roles = {
             item["role"] for item in self.component["provides"]
         }
-        self.assertNotIn("notification-center", roles)
+        self.assertIn("notification-center", roles)
         self.assertNotIn("transition-presenter", roles)
         self.assertNotIn("chooser", roles)
         claims = {
@@ -76,10 +77,14 @@ class NativeShellManifestTests(unittest.TestCase):
             },
         )
         role_windows = self.component["x-msys-role-windows"]
-        self.assertEqual(set(role_windows), {"launcher", "navigation-bar"})
+        self.assertEqual(
+            set(role_windows),
+            {"launcher", "navigation-bar", "notification-center"},
+        )
         self.assertEqual(role_windows["launcher"], self.component["windowing"])
         self.assertEqual(role_windows["navigation-bar"]["mode"], "overlay")
         self.assertEqual(role_windows["navigation-bar"]["edge"], "bottom")
+        self.assertEqual(role_windows["notification-center"]["mode"], "overlay")
         metadata = self.document["package"]["x-msys-i18n"]
         catalog = json.loads((ROOT / metadata["catalog"]).read_text(encoding="utf-8"))
         self.assertEqual(set(catalog["messages"]), {"en-US", "zh"})
@@ -103,7 +108,7 @@ class NativeShellManifestTests(unittest.TestCase):
         )
         permissions = set(self.component["permissions"])
         self.assertIn("mipc.call:role:window-manager", permissions)
-        self.assertIn("mipc.call:role:notification-center", permissions)
+        self.assertNotIn("mipc.call:role:notification-center", permissions)
         self.assertIn("mipc.call:role:audio-manager", permissions)
         self.assertIn("mipc.call:role:hal-manager", permissions)
         self.assertIn("mipc.call:msys.core", permissions)
@@ -120,6 +125,20 @@ class NativeShellManifestTests(unittest.TestCase):
             permissions,
         )
         self.assertIn("mipc.event:subscribe:msys.hal.changed", permissions)
+        self.assertIn("mipc.event:subscribe:msys.notification.post", permissions)
+        self.assertIn(
+            "mipc.event:subscribe:msys.session.preferences.changed",
+            permissions,
+        )
+        self.assertIn("mipc.event:subscribe:msys.timezone.changed", permissions)
+        timezone_implementation = (ROOT / "src" / "main.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'strcmp(topic, "msys.timezone.changed") == 0',
+            timezone_implementation,
+        )
+        self.assertIn("tzset();", timezone_implementation)
         self.assertIn("mipc.event:publish:msys.shell.preferences.changed", permissions)
         banned = ("systemctl", "dbus", "apt-get", "pip install", "openbox")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8").lower()
@@ -225,6 +244,7 @@ class NativeShellManifestTests(unittest.TestCase):
             '"navigation-bar"',
             '"task-switcher"',
             '"notification-presenter"',
+            '"notification-center"',
         ):
             self.assertIn(role, implementation)
         self.assertIn("draw_cached_image", implementation)

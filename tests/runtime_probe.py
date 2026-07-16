@@ -1557,10 +1557,82 @@ def main() -> int:
                 "18",
                 str(chrome_height // 2),
             )
-            notification_request = wait_for(
-                parent, outbound_call("role:notification-center", "show")
+            if not wait_window_viewable("MSYS Notification Center"):
+                raise RuntimeError("left chrome area did not open native notification center")
+            assert_window_role(
+                "MSYS Notification Center",
+                "notification-center",
+                "org.msys.shell.native.notification-center",
             )
-            reply(parent, notification_request, {"ok": True})
+            for notice in range(7):
+                send(parent, {
+                    "type": "event",
+                    "topic": "msys.notification.post",
+                    "source": "org.example.probe",
+                    "payload": {
+                        "title": f"Notice {notice}",
+                        "message": f"Bounded notification body {notice}",
+                    },
+                })
+            send(parent, {
+                "type": "call",
+                "id": 81,
+                "logical_target": "role:notification-center",
+                "method": "list",
+                "payload": {"limit": 2},
+            })
+            listed = wait_for(parent, packet_type("return", 81))
+            listed_payload = listed.get("payload", {})
+            if listed_payload.get("count") != 7 or len(
+                listed_payload.get("notifications", [])
+            ) != 2:
+                raise RuntimeError(f"native notification list is not bounded: {listed}")
+            notification_width, notification_height = window_geometry(
+                "MSYS Notification Center"
+            )
+            debug_cross_surface_swipe(
+                "MSYS Notification Center",
+                notification_width // 2,
+                notification_height - 30,
+                notification_width // 2,
+                100,
+            )
+            if not window_is_viewable("MSYS Notification Center"):
+                raise RuntimeError("notification scroll dismissed the full overlay")
+            debug_overlay_click(
+                "MSYS Notification Center",
+                notification_width - 40,
+                32,
+            )
+            if not wait_window_hidden("MSYS Notification Center"):
+                raise RuntimeError("native notification close button did not hide overlay")
+            send(parent, {
+                "type": "event",
+                "topic": "msys.session.preferences.changed",
+                "payload": {"language": "zh", "resolved_language": "zh"},
+            })
+            localized_apps_request = wait_for(
+                parent, outbound_call("msys.core", "list_apps")
+            )
+            reply(parent, localized_apps_request, {"apps": [
+                {
+                    "id": "org.example.alpha:main",
+                    "name": "Alpha",
+                    "summary": "Real first app",
+                    "package_root": str(thumbnail.parent),
+                    "icons": [{"path": thumbnail.name}],
+                },
+                {
+                    "id": "org.example.beta:main",
+                    "name": "Beta",
+                    "summary": "Real second app",
+                },
+            ]})
+            send(parent, {
+                "type": "event",
+                "topic": "msys.timezone.changed",
+                "payload": {"timezone": "Etc/UTC"},
+            })
             debug_input(
                 "--debug-click-identity",
                 "org.msys.shell.native.chrome",
