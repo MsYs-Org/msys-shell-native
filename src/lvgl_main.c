@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.4"
+#define APP_VERSION "0.6.5"
 #define SURFACE_COUNT 7u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -884,6 +884,56 @@ static lv_obj_t *make_fallback_icon(shell_view *view, lv_obj_t *parent,
     return icon;
 }
 
+static void launcher_resolve_grid_geometry(shell_view *view, lv_obj_t *root,
+                                           lv_obj_t *grid)
+{
+    lv_obj_t *header = view_object(view, "launcher_header");
+    lv_obj_t *status = view_object(view, "launcher_status");
+    int32_t available;
+    int32_t row_gap;
+    if(root == NULL || grid == NULL || header == NULL || status == NULL) return;
+    lv_obj_update_layout(root);
+    row_gap = lv_obj_get_style_pad_row(root, LV_PART_MAIN);
+    available = lv_obj_get_content_height(root) - lv_obj_get_height(header) -
+        lv_obj_get_height(status) - row_gap * 2;
+    if(available < 64) available = 64;
+    lv_obj_set_flex_grow(grid, 0);
+    lv_obj_set_height(grid, available);
+    lv_obj_update_layout(root);
+}
+
+static void launcher_report_geometry(shell_state *shell, lv_obj_t *root,
+                                     lv_obj_t *grid, size_t visible_count)
+{
+    lv_area_t root_area;
+    lv_area_t grid_area;
+    lv_area_t tile_area = {0, 0, 0, 0};
+    lv_obj_t *tile = lv_obj_get_child_count(grid) > 0u
+        ? lv_obj_get_child(grid, 0) : NULL;
+    if(shell->apps_loaded == 0 || root == NULL || grid == NULL) return;
+    lv_obj_update_layout(root);
+    lv_obj_get_coords(root, &root_area);
+    lv_obj_get_coords(grid, &grid_area);
+    if(tile != NULL) lv_obj_get_coords(tile, &tile_area);
+    fprintf(stderr,
+        "msys-shell-lvgl: launcher geometry apps=%zu layout=%zu page=%u/%u "
+        "visible=%zu children=%u root=%d,%d,%dx%d grid=%d,%d,%dx%d "
+        "content=%dx%d tile=%s%d,%d,%dx%d\n",
+        shell->app_count, shell->launcher_layout.count,
+        shell->launcher_page + 1u,
+        msys_native_launcher_page_count(&shell->launcher_layout),
+        visible_count, (unsigned int)lv_obj_get_child_count(grid),
+        (int)root_area.x1, (int)root_area.y1,
+        (int)lv_area_get_width(&root_area), (int)lv_area_get_height(&root_area),
+        (int)grid_area.x1, (int)grid_area.y1,
+        (int)lv_area_get_width(&grid_area), (int)lv_area_get_height(&grid_area),
+        (int)lv_obj_get_content_width(grid), (int)lv_obj_get_content_height(grid),
+        tile == NULL ? "none:" : "",
+        (int)tile_area.x1, (int)tile_area.y1,
+        tile == NULL ? 0 : (int)lv_area_get_width(&tile_area),
+        tile == NULL ? 0 : (int)lv_area_get_height(&tile_area));
+}
+
 static void render_launcher(shell_state *shell)
 {
     shell_view *view = &shell->views[SURFACE_LAUNCHER];
@@ -904,6 +954,7 @@ static void render_launcher(shell_state *shell)
     char page_text[24];
     shell->binding_count = 0u;
     if(grid == NULL) return;
+    launcher_resolve_grid_geometry(view, root, grid);
     width = lv_obj_get_content_width(grid);
     height = lv_obj_get_content_height(grid);
     if(width <= 0) width = ROOT_WIDTH - 24;
@@ -997,6 +1048,7 @@ static void render_launcher(shell_state *shell)
         set_label_if_changed(view, "page_label", page_text);
         set_label_if_changed(view, "launcher_status",
             localized(shell, "点击左箭头关闭文件夹", "Use the left arrow to close"));
+        launcher_report_geometry(shell, root, grid, folder->member_count);
         return;
     }
     set_label_if_changed(view, "launcher_title", localized(shell, "应用", "Apps"));
@@ -1064,6 +1116,7 @@ static void render_launcher(shell_state *shell)
             : (shell->launcher_editing != 0
                 ? localized(shell, "编辑模式：拖动排序或归入文件夹",
                             "Edit mode: drag to reorder or group") : ""));
+    launcher_report_geometry(shell, root, grid, count);
 }
 
 static void render_metrics(shell_state *shell)
@@ -2063,8 +2116,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.4\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.4\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.5\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.5\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -2281,7 +2334,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.4\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.5\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","

@@ -17,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.4")
+        self.assertEqual(self.document["package"]["version"], "0.6.5")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.4"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.5"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "background")
@@ -98,6 +98,7 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertEqual(grid.attrib["height"], "1")
         self.assertEqual(grid.attrib["flex_grow"], "1")
         self.assertEqual(grid.attrib["scrollable"], "false")
+        self.assertIn("launcher_header", named)
         view = tree.getroot().find("view")
         self.assertIsNotNone(view)
         header = list(view)[0]
@@ -124,6 +125,9 @@ class NativeShellManifestTests(unittest.TestCase):
         render = render[: render.index("static void render_metrics")]
         self.assertIn("msys_native_launcher_layout_reconcile", render)
         self.assertIn("lv_button_create(grid)", render)
+        self.assertIn("launcher_resolve_grid_geometry", source)
+        self.assertIn("lv_obj_set_flex_grow(grid, 0)", source)
+        self.assertIn("launcher geometry apps=%zu", source)
 
     def test_phase_two_role_boundary_does_not_claim_missing_contracts(self) -> None:
         source = (ROOT / "README.md").read_text(encoding="utf-8")

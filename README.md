@@ -1,6 +1,12 @@
 # MSYS Native Shell
 
-Current source version: `0.6.4`.
+Current source version: `0.6.5`.
+
+Version 0.6.5 makes the Launcher work area independent of LVGL's initial
+content-size pass: C resolves the remaining height from the live root, header,
+status and row gaps before creating tiles. One bounded diagnostic line after an
+authoritative app render reports root/grid/tile geometry without invalidating
+or drawing any object.
 
 Version 0.6.4 fixes the LVGL Launcher flex geometry after asynchronous app
 discovery. The authoritative app list and persisted page layout were already
