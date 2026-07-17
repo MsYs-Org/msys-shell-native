@@ -1,6 +1,27 @@
 # MSYS Native Shell
 
-Current source version: `0.6.19`.
+Current source version: `0.6.23`.
+
+Version 0.6.23 commits a consumed horizontal Home gesture on both LVGL
+`RELEASED` and `PRESS_LOST`. Following the finger translates the pressed grid,
+so a real X11/touch sequence can legitimately end with `PRESS_LOST`; treating
+that as cancellation made every swipe spring back even though button paging
+worked. Vertical cancellation clears the gesture before this terminal path and
+still never changes pages.
+
+The same terminal-event rule now applies to launcher drop commits: an X11
+gesture that becomes `PRESS_LOST` can still create a folder, insert between
+tiles, or move a folder member back to Home. Folder-member dragging retains the
+last valid pointer position, ignores small long-press wobble and treats empty
+folder space or a screen edge as an explicit extraction target.
+Moving beyond the page-swipe slop also cancels a pending tile long press, so a
+slow finger-following page gesture cannot accidentally enter edit mode.
+Launcher icon images and fallback glyph tiles are decorative hit-test children;
+they no longer intercept the parent tile's tap or long-press events.
+The launch presenter owns a separate 84px bitmap cache, so asynchronous Home
+rerenders cannot resize/free the icon while its opening animation is visible.
+Folder-member labels now select the same dynamic CJK theme font as Home tiles
+instead of falling back to LVGL's ASCII-only default font.
 
 Version 0.6.19 connects the Launcher's acrylic setting to the shared LVGL
 cached-acrylic runtime. The wallpaper is sampled once into a 4x-downsampled

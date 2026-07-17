@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.shell.native",
     "name": "MSYS Native Shell",
-    "version": "0.6.19",
+    "version": "0.6.23",
     "kind": "system",
     "vendor": "MSYS",
     "summary": "Lean LVGL/XML shell with an Xlib compatibility fallback",

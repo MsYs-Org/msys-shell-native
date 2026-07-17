@@ -27,7 +27,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.19"
+#define APP_VERSION "0.6.23"
 #define SURFACE_COUNT 8u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -139,6 +139,7 @@ struct shell_state {
     size_t task_count;
     ui_bitmap app_icons[MSYS_NATIVE_MAX_APPS];
     ui_bitmap task_previews[MSYS_NATIVE_MAX_TASKS];
+    ui_bitmap transition_icon;
     ui_bitmap wallpaper;
     msys_ui_acrylic_cache_t *launcher_acrylic;
     msys_ui_acrylic_panel_t *launcher_acrylic_panels[
@@ -210,6 +211,8 @@ struct shell_state {
     int launcher_edge_armed;
     uint64_t launcher_edge_since;
     lv_point_t launcher_drag_origin;
+    lv_point_t launcher_drag_point;
+    int launcher_drag_point_valid;
     lv_obj_t *launcher_drag_object;
     lv_obj_t *launcher_drop_preview;
     int launcher_swipe_active;
@@ -388,6 +391,11 @@ static int launcher_acrylic_prepare(shell_state *shell)
 {
     acrylic_fill_source fill;
     acrylic_bitmap_source bitmap;
+    msys_ui_acrylic_cache_config_t config =
+        msys_ui_acrylic_cache_config_default();
+    /* The cache is stretched 4x on this panel, so keep grain subtle enough
+     * that one cached sample never reads as a visible square artifact. */
+    config.grain_strength = 5u;
     if(shell == NULL || shell->preferences.acrylic == 0) {
         launcher_acrylic_dispose(shell);
         return 0;
@@ -402,13 +410,13 @@ static int launcher_acrylic_prepare(shell_state *shell)
         bitmap.pixels = shell->wallpaper.pixels;
         bitmap.stride = (size_t)ROOT_WIDTH * 2u;
         shell->launcher_acrylic = msys_ui_acrylic_cache_create_sampled(
-            ROOT_WIDTH, WORK_HEIGHT, NULL, acrylic_bitmap_sample, &bitmap);
+            ROOT_WIDTH, WORK_HEIGHT, &config, acrylic_bitmap_sample, &bitmap);
     }
     else {
         fill.color = rgb888_to_rgb565(launcher_color(
             shell->preferences.wallpaper_color, 0xf4f6fa));
         shell->launcher_acrylic = msys_ui_acrylic_cache_create_sampled(
-            ROOT_WIDTH, WORK_HEIGHT, NULL, acrylic_fill_sample, &fill);
+            ROOT_WIDTH, WORK_HEIGHT, &config, acrylic_fill_sample, &fill);
     }
     if(shell->launcher_acrylic == NULL) return 0;
     shell->launcher_acrylic_revision = shell->preferences.revision;
@@ -770,9 +778,9 @@ static int show_launch_transition(shell_state *shell, size_t app_index,
     shell->transition_finishing = 0;
     set_label_if_changed(view, "transition_name", shell->apps[app_index].name);
     lv_obj_clean(host);
-    if(bitmap_load(&shell->app_icons[app_index],
+    if(bitmap_load(&shell->transition_icon,
                    shell->apps[app_index].icon_path, 84, 84) != 0)
-        icon = make_image(host, &shell->app_icons[app_index], 84, 84);
+        icon = make_image(host, &shell->transition_icon, 84, 84);
     else icon = make_fallback_icon(view, host, shell->apps[app_index].name, 84);
     if(icon != NULL) lv_obj_center(icon);
     lv_obj_update_layout(root);
@@ -1130,6 +1138,7 @@ static void launcher_reset_drag(shell_state *shell)
     shell->launcher_edge_direction = 0;
     shell->launcher_edge_armed = 0;
     shell->launcher_edge_since = 0u;
+    shell->launcher_drag_point_valid = 0;
     launcher_clear_drop_preview(shell);
 }
 
@@ -1288,6 +1297,8 @@ static void launcher_item_event_cb(lv_event_t *event)
         shell->launcher_drag_source = (int)binding->index;
         shell->launcher_drag_target = -1;
         shell->launcher_drag_origin = point;
+        shell->launcher_drag_point = point;
+        shell->launcher_drag_point_valid = 1;
         shell->launcher_drag_object = object;
         shell->launcher_dragging = 0;
         shell->launcher_drag_dx = 0;
@@ -1297,6 +1308,12 @@ static void launcher_item_event_cb(lv_event_t *event)
             msys_ui_animate_press(object, shell->policy, true);
     }
     else if(code == LV_EVENT_LONG_PRESSED) {
+        if(event_point(event, &point) != 0 &&
+           (abs(point.x - shell->launcher_drag_origin.x) >
+                LAUNCHER_SWIPE_SLOP_PX ||
+            abs(point.y - shell->launcher_drag_origin.y) >
+                LAUNCHER_SWIPE_SLOP_PX))
+            return;
         shell->launcher_editing = 1;
         shell->launcher_selected = (int)binding->index;
         lv_obj_set_style_border_width(object, 2, LV_PART_MAIN);
@@ -1310,6 +1327,8 @@ static void launcher_item_event_cb(lv_event_t *event)
             event_point(event, &point) != 0) {
         int dx = point.x - shell->launcher_drag_origin.x;
         int dy = point.y - shell->launcher_drag_origin.y;
+        shell->launcher_drag_point = point;
+        shell->launcher_drag_point_valid = 1;
         if(abs(dx) > 5 || abs(dy) > 5) shell->launcher_dragging = 1;
         if(shell->launcher_dragging != 0) {
             if(dx != shell->launcher_drag_dx) {
@@ -1333,7 +1352,7 @@ static void launcher_item_event_cb(lv_event_t *event)
         lv_obj_set_style_translate_x(object, 0, LV_PART_MAIN);
         lv_obj_set_style_translate_y(object, 0, LV_PART_MAIN);
         if(shell->launcher_dragging != 0) shell->launcher_pointer_consumed = 1;
-        if(code == LV_EVENT_RELEASED && shell->launcher_editing != 0 &&
+        if(shell->launcher_editing != 0 &&
            source >= 0 && shell->launcher_dragging != 0) {
             if(target >= 0 &&
                shell->launcher_drop_mode == MSYS_NATIVE_LAUNCHER_DROP_GROUP) {
@@ -1408,6 +1427,47 @@ static void launcher_item_event_cb(lv_event_t *event)
     }
 }
 
+static int launcher_folder_drop_is_outside(shell_state *shell,
+                                           lv_obj_t *object,
+                                           lv_point_t point)
+{
+    lv_obj_t *grid = view_object(&shell->views[SURFACE_LAUNCHER], "app_grid");
+    lv_area_t area;
+    uint32_t index;
+    uint32_t count;
+    if(grid == NULL) return 1;
+    lv_obj_get_coords(grid, &area);
+    if(point.x <= LAUNCHER_EDGE_PX ||
+       point.x >= ROOT_WIDTH - LAUNCHER_EDGE_PX || point.y < area.y1 ||
+       point.y > area.y2)
+        return 1;
+
+    /* A small long-press wobble should not pull an item out.  LVGL includes
+     * style translation in the live coordinates, so recover the tile's
+     * original slot before testing it. */
+    lv_obj_get_coords(object, &area);
+    area.x1 -= shell->launcher_drag_dx;
+    area.x2 -= shell->launcher_drag_dx;
+    area.y1 -= shell->launcher_drag_dy;
+    area.y2 -= shell->launcher_drag_dy;
+    if(point.x >= area.x1 && point.x <= area.x2 &&
+       point.y >= area.y1 && point.y <= area.y2)
+        return 0;
+
+    /* Empty folder space is an intentional extract target.  Landing on a
+     * sibling keeps the member in the folder until in-folder reorder exists. */
+    count = lv_obj_get_child_count(grid);
+    for(index = 0u; index < count; index++) {
+        lv_obj_t *child = lv_obj_get_child(grid, (int32_t)index);
+        if(child == NULL || child == object) continue;
+        lv_obj_get_coords(child, &area);
+        if(point.x >= area.x1 && point.x <= area.x2 &&
+           point.y >= area.y1 && point.y <= area.y2)
+            return 0;
+    }
+    return 1;
+}
+
 static void launcher_folder_member_event_cb(lv_event_t *event)
 {
     ui_binding *binding = lv_event_get_user_data(event);
@@ -1428,6 +1488,8 @@ static void launcher_folder_member_event_cb(lv_event_t *event)
         shell->launcher_drag_folder = (int)binding->index;
         shell->launcher_drag_member = (int)binding->secondary;
         shell->launcher_drag_origin = point;
+        shell->launcher_drag_point = point;
+        shell->launcher_drag_point_valid = 1;
         shell->launcher_drag_object = object;
         shell->launcher_dragging = 0;
         shell->launcher_drag_dx = 0;
@@ -1437,6 +1499,12 @@ static void launcher_folder_member_event_cb(lv_event_t *event)
             msys_ui_animate_press(object, shell->policy, true);
     }
     else if(code == LV_EVENT_LONG_PRESSED) {
+        if(event_point(event, &point) != 0 &&
+           (abs(point.x - shell->launcher_drag_origin.x) >
+                LAUNCHER_SWIPE_SLOP_PX ||
+            abs(point.y - shell->launcher_drag_origin.y) >
+                LAUNCHER_SWIPE_SLOP_PX))
+            return;
         shell->launcher_editing = 1;
         lv_obj_set_style_border_width(object, 2, LV_PART_MAIN);
         lv_obj_set_style_border_color(object, lv_color_hex(0x3f66e8),
@@ -1451,6 +1519,8 @@ static void launcher_folder_member_event_cb(lv_event_t *event)
             event_point(event, &point) != 0) {
         int dx = point.x - shell->launcher_drag_origin.x;
         int dy = point.y - shell->launcher_drag_origin.y;
+        shell->launcher_drag_point = point;
+        shell->launcher_drag_point_valid = 1;
         if(abs(dx) > 5 || abs(dy) > 5) shell->launcher_dragging = 1;
         if(shell->launcher_dragging != 0) {
             if(dx != shell->launcher_drag_dx) {
@@ -1465,22 +1535,19 @@ static void launcher_folder_member_event_cb(lv_event_t *event)
     }
     else if(code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         int extracted = 0;
+        int point_valid = event_point(event, &point) != 0;
+        if(point_valid == 0 && shell->launcher_drag_point_valid != 0) {
+            point = shell->launcher_drag_point;
+            point_valid = 1;
+        }
         if(shell->preferences.animations_enabled != 0 &&
            shell->preferences.reduce_motion == 0)
             msys_ui_animate_press(object, shell->policy, false);
         lv_obj_set_style_translate_x(object, 0, LV_PART_MAIN);
         lv_obj_set_style_translate_y(object, 0, LV_PART_MAIN);
         if(shell->launcher_dragging != 0) shell->launcher_pointer_consumed = 1;
-        if(code == LV_EVENT_RELEASED && shell->launcher_dragging != 0 &&
-           event_point(event, &point) != 0) {
-            lv_obj_t *grid = view_object(&shell->views[SURFACE_LAUNCHER],
-                                         "app_grid");
-            lv_area_t area;
-            if(grid != NULL) lv_obj_get_coords(grid, &area);
-            else memset(&area, 0, sizeof(area));
-            if(grid == NULL || point.x <= LAUNCHER_EDGE_PX ||
-               point.x >= ROOT_WIDTH - LAUNCHER_EDGE_PX || point.y < area.y1 ||
-               point.y > area.y2) {
+        if(shell->launcher_dragging != 0 && point_valid != 0) {
+            if(launcher_folder_drop_is_outside(shell, object, point) != 0) {
                 const msys_native_launcher_item *folder =
                     &shell->launcher_layout.items[binding->index];
                 size_t position = msys_native_launcher_page_items(
@@ -1558,10 +1625,9 @@ static void launcher_page_event_cb(lv_event_t *event)
         int page = (int)shell->launcher_page;
         int direction = 0;
         shell->launcher_swipe_active = 0;
-        if(code == LV_EVENT_RELEASED)
-            page = msys_native_launcher_swipe_page(shell->launcher_page,
-                msys_native_launcher_page_count(&shell->launcher_layout), dx,
-                lv_obj_get_width(grid));
+        page = msys_native_launcher_swipe_page(shell->launcher_page,
+            msys_native_launcher_page_count(&shell->launcher_layout), dx,
+            lv_obj_get_width(grid));
         if(page != (int)shell->launcher_page) {
             direction = page > (int)shell->launcher_page ? 1 : -1;
             shell->launcher_page = (unsigned int)page;
@@ -1677,6 +1743,7 @@ static lv_obj_t *make_image(lv_obj_t *parent, ui_bitmap *bitmap, int width,
     lv_obj_t *image;
     if(bitmap == NULL || bitmap->pixels == NULL) return NULL;
     image = lv_image_create(parent);
+    lv_obj_remove_flag(image, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_image_set_src(image, &bitmap->descriptor);
     lv_obj_set_size(image, width, height);
     lv_obj_set_style_radius(image, 12, LV_PART_MAIN);
@@ -1700,6 +1767,7 @@ static lv_obj_t *make_fallback_icon(shell_view *view, lv_obj_t *parent,
     lv_obj_t *symbol = lv_label_create(icon);
     char initial[5] = "M";
     size_t bytes = name != NULL ? strlen(name) : 0u;
+    lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_size(icon, size, size);
     lv_obj_set_style_radius(icon, (int16_t)(size / 4), LV_PART_MAIN);
     lv_obj_set_style_bg_color(icon, lv_color_hex(0x3f66e8), LV_PART_MAIN);
@@ -1920,6 +1988,10 @@ static void render_launcher(shell_state *shell)
                 lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
                 lv_label_set_text(name, shell->apps[app_index].name);
                 lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+                lv_obj_set_style_text_color(name, lv_color_hex(0x253047),
+                                             LV_PART_MAIN);
+                lv_obj_set_style_text_font(
+                    name, msys_ui_theme_font(view->theme, 14), LV_PART_MAIN);
             }
             if(binding != NULL)
                 lv_obj_add_event_cb(tile, launcher_folder_member_event_cb,
@@ -3092,8 +3164,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.19\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.19\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.23\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.23\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -3272,6 +3344,7 @@ static void shutdown_shell(shell_state *shell)
     size_t index;
     bitmaps_dispose(shell->app_icons, MSYS_NATIVE_MAX_APPS);
     bitmaps_dispose(shell->task_previews, MSYS_NATIVE_MAX_TASKS);
+    bitmap_dispose(&shell->transition_icon);
     bitmap_dispose(&shell->wallpaper);
     for(index = 0u; index < SURFACE_COUNT; index++) {
         if(shell->views[index].document != NULL)
@@ -3344,7 +3417,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.19\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.23\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","

@@ -17,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.19")
+        self.assertEqual(self.document["package"]["version"], "0.6.23")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.19"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.23"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "manual")
@@ -162,7 +162,15 @@ class NativeShellManifestTests(unittest.TestCase):
         render = source[source.index("static void render_launcher(shell_state *shell)") :]
         render = render[: render.index("static void render_metrics")]
         self.assertIn("msys_native_launcher_layout_reconcile", render)
-        self.assertIn("lv_button_create(grid)", render)
+        self.assertIn("launcher_tile_create(shell, grid", render)
+        self.assertGreaterEqual(
+            source.count("LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE"), 2
+        )
+        tile_helper = source[
+            source.index("static lv_obj_t *launcher_tile_create"):
+            source.index("static void launcher_acrylic_sync")
+        ]
+        self.assertIn("lv_button_create(grid)", tile_helper)
         self.assertIn("launcher_resolve_grid_geometry", source)
         self.assertIn('view_object(view, "launcher_root")', source)
         self.assertIn("root = msys_ui_document_root(view->document)", source)
@@ -177,8 +185,40 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("msys_ui_acrylic_cache_create_sampled", source)
         self.assertIn("msys_ui_acrylic_panel_create", source)
         self.assertIn("msys_ui_acrylic_panel_sync", source)
+        self.assertIn("ui_bitmap transition_icon", source)
+        self.assertIn("bitmap_load(&shell->transition_icon", source)
+        self.assertIn("bitmap_dispose(&shell->transition_icon)", source)
+        folder_render = render[
+            render.index("if(shell->launcher_folder >= 0"):
+            render.index("set_label_if_changed(view, \"launcher_title\", localized")
+        ]
+        self.assertIn("msys_ui_theme_font(view->theme, 14)", folder_render)
         self.assertNotIn("MSYS_UI_ALLOW_ACRYLIC", source)
         self.assertNotIn("allow_acrylic", source)
+        swipe = source[
+            source.index("static void launcher_page_event_cb"):
+            source.index("static void item_event_cb")
+        ]
+        self.assertIn("code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST",
+                      swipe)
+        self.assertNotIn("if(code == LV_EVENT_RELEASED)\n            page =", swipe)
+        item_drag = source[
+            source.index("static void launcher_item_event_cb"):
+            source.index("static int launcher_folder_drop_is_outside")
+        ]
+        self.assertIn("shell->launcher_drag_origin.x", item_drag)
+        self.assertIn("LAUNCHER_SWIPE_SLOP_PX", item_drag)
+        self.assertNotIn("if(code == LV_EVENT_RELEASED && shell->launcher_editing",
+                         item_drag)
+        member_drag = source[
+            source.index("static void launcher_folder_member_event_cb"):
+            source.index("static void launcher_page_event_cb")
+        ]
+        self.assertIn("shell->launcher_drag_point_valid", member_drag)
+        self.assertIn("launcher_folder_drop_is_outside", member_drag)
+        self.assertNotIn("event_point(event, &point) == 0", item_drag + member_drag)
+        self.assertNotIn("if(code == LV_EVENT_RELEASED && shell->launcher_dragging",
+                         member_drag)
         self.assertIn('"navigation_root"', source)
         self.assertIn("lv_obj_set_parent(pill_area, navigation_root)", source)
         self.assertIn("lv_obj_set_parent(pill, navigation_root)", source)
