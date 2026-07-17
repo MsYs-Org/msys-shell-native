@@ -1,8 +1,8 @@
 # MSYS Native Shell
 
-Current source version: `0.6.10`.
+Current source version: `0.6.11`.
 
-Version 0.6.10 makes the parity-complete LVGL shell the supervised default and
+Version 0.6.11 makes the parity-complete LVGL shell the supervised default and
 keeps Xlib as an explicit manual fallback, preventing two full Shell processes
 from occupying the same system-UI roles.
 
