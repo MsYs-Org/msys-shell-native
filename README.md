@@ -1,8 +1,11 @@
 # MSYS Native Shell
 
-Current source version: `0.6.26`.
+Current source version: `0.6.27`.
 
-Version 0.6.26 resizes the shared LVGL X11 surfaces atomically when mobile
+Version 0.6.27 clears the phone folder overlay after launching a member so the
+foreground application receives Back normally, and positions launch masks from
+the active status-bar inset in both normal and immersive layouts. Version 0.6.26
+resizes the shared LVGL X11 surfaces atomically when mobile
 status/navigation visibility or buttons/pill preferences change.  The X11
 workarea and LVGL buffers now move together, so reducing the pill to 24px or
 an 8px immersive edge cannot leave an old navigation frame behind.

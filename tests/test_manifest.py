@@ -17,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.26")
+        self.assertEqual(self.document["package"]["version"], "0.6.27")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.26"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.27"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "manual")
@@ -110,7 +110,8 @@ class NativeShellManifestTests(unittest.TestCase):
                         start.index('"begin_launch_transition"'))
         self.assertLess(start.index('"begin_launch_transition"'),
                         start.index('"msys.core", "start"'))
-        self.assertIn("transition_origin_y + BAR_HEIGHT", start)
+        self.assertIn("transition_origin_y + shell->chrome_height", start)
+        self.assertNotIn("transition_origin_y + BAR_HEIGHT", start)
         transition_window = component["x-msys-role-windows"][
             "transition-presenter"
         ]
@@ -237,6 +238,13 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertNotIn("event_point(event, &point) == 0", item_drag + member_drag)
         self.assertNotIn("if(code == LV_EVENT_RELEASED && shell->launcher_dragging",
                          member_drag)
+        member_launch = member_drag[
+            member_drag.index("else if(code == LV_EVENT_CLICKED"):
+        ]
+        self.assertLess(member_launch.index("start_app_at(shell, app_index, object)"),
+                        member_launch.index("shell->launcher_folder = -1"))
+        self.assertLess(member_launch.index("shell->launcher_folder = -1"),
+                        member_launch.index("render_launcher(shell)"))
         self.assertIn('"navigation_root"', source)
         self.assertIn("lv_obj_set_parent(pill_area, navigation_root)", source)
         self.assertIn("lv_obj_set_parent(pill, navigation_root)", source)

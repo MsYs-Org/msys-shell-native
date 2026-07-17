@@ -27,7 +27,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.26"
+#define APP_VERSION "0.6.27"
 #define SURFACE_COUNT 8u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -914,7 +914,7 @@ static void start_app_at(shell_state *shell, size_t index, lv_obj_t *origin)
             "\"height\":%d},\"timeout_ms\":%u}",
             shell->transition_id, escaped_component, escaped_icon,
             shell->transition_origin_x,
-            shell->transition_origin_y + BAR_HEIGHT,
+            shell->transition_origin_y + shell->chrome_height,
             shell->transition_origin_width, shell->transition_origin_height,
             LAUNCH_TRANSITION_TIMEOUT_MS);
         begin_id = send_call(shell, PENDING_BEGIN_TRANSITION, index,
@@ -1579,8 +1579,17 @@ static void launcher_folder_member_event_cb(lv_event_t *event)
             &shell->launcher_layout.items[binding->index];
         size_t app_index;
         if(launcher_app_index(shell, folder->members[binding->secondary],
-                              &app_index))
+                              &app_index)) {
             start_app_at(shell, app_index, object);
+            /* A folder is a Home overlay, not part of the launched app's
+             * navigation stack.  Clear it after the transition captured the
+             * tapped icon geometry so Back is delegated to the foreground app
+             * instead of being consumed by stale launcher state. */
+            shell->launcher_folder = -1;
+            shell->launcher_editing = 0;
+            launcher_reset_drag(shell);
+            render_launcher(shell);
+        }
     }
 }
 
@@ -3853,8 +3862,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.26\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.26\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.27\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.27\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -4116,7 +4125,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.26\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.27\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","
