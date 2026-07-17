@@ -3,36 +3,37 @@
         flex_flow="column" scrollable="false" style_bg_color="#f4f7fb"
         style_bg_opa="100%" style_pad_left="12" style_pad_right="12"
         style_pad_top="10" style_pad_bottom="6" style_pad_row="6">
-    <lv_obj name="launcher_header" width="100%" height="42" flex_flow="row"
+    <lv_obj name="launcher_header" width="100%" height="58" flex_flow="column"
             scrollable="false"
             style_bg_opa="0%" style_border_width="0" style_pad_all="0"
-            style_pad_column="5">
-      <lv_obj width="1" height="100%" flex_grow="1" flex_flow="column"
+            style_pad_row="1">
+      <lv_obj name="launcher_title_row" width="100%" height="36" flex_flow="row"
               scrollable="false" style_bg_opa="0%" style_border_width="0"
-              style_pad_all="0" style_pad_row="1">
-        <lv_label name="launcher_title" text="应用" width="100%" long_mode="dot"
-                  style_text_font="msys_20" style_text_color="#182033"/>
-        <lv_label name="launcher_hint" text="轻触启动，长按编辑" width="100%"
-                  long_mode="dot" style_text_font="msys_14"
-                  style_text_color="#69758a"/>
+              style_pad_all="0" style_pad_column="5">
+        <lv_label name="launcher_title" text="应用" width="1" long_mode="dot"
+                  flex_grow="1" style_text_font="msys_20"
+                  style_text_color="#182033"/>
+        <lv_obj name="page_navigation" width="108" height="34" flex_flow="row"
+                scrollable="false" style_bg_opa="0%" style_border_width="0"
+                style_pad_all="0" style_pad_column="2">
+          <lv_button name="page_previous" width="30" height="30" style_radius="11"
+                     style_bg_color="#ffffff" style_border_width="1"
+                     style_border_color="#dce3ee">
+            <lv_label text="&lt;" style_text_font="msys_16" align="center"/>
+          </lv_button>
+          <lv_label name="page_label" text="1 / 1" width="40" height="30"
+                    style_text_font="msys_14" style_text_color="#69758a"
+                    align="center"/>
+          <lv_button name="page_next" width="30" height="30" style_radius="11"
+                     style_bg_color="#ffffff" style_border_width="1"
+                     style_border_color="#dce3ee">
+            <lv_label text="&gt;" style_text_font="msys_16" align="center"/>
+          </lv_button>
+        </lv_obj>
       </lv_obj>
-      <lv_obj name="page_navigation" width="112" height="40" flex_flow="row"
-              scrollable="false" style_bg_opa="0%" style_border_width="0"
-              style_pad_all="0" style_pad_column="2">
-        <lv_button name="page_previous" width="32" height="32" style_radius="12"
-                   style_bg_color="#ffffff" style_border_width="1"
-                   style_border_color="#dce3ee">
-          <lv_label text="&lt;" style_text_font="msys_16" align="center"/>
-        </lv_button>
-        <lv_label name="page_label" text="1 / 1" width="40" height="32"
-                  style_text_font="msys_14" style_text_color="#69758a"
-                  align="center"/>
-        <lv_button name="page_next" width="32" height="32" style_radius="12"
-                   style_bg_color="#ffffff" style_border_width="1"
-                   style_border_color="#dce3ee">
-          <lv_label text="&gt;" style_text_font="msys_16" align="center"/>
-        </lv_button>
-      </lv_obj>
+      <lv_label name="launcher_hint" text="轻触启动，长按编辑" width="100%"
+                height="20" long_mode="dot" style_text_font="msys_14"
+                style_text_color="#69758a"/>
     </lv_obj>
     <lv_obj name="app_grid" width="100%" height="1" flex_grow="1"
             flex_flow="row_wrap" scrollable="false" style_bg_opa="0%"

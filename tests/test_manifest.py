@@ -17,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.16")
+        self.assertEqual(self.document["package"]["version"], "0.6.17")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.16"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.17"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "manual")
@@ -106,17 +106,20 @@ class NativeShellManifestTests(unittest.TestCase):
         view = tree.getroot().find("view")
         self.assertIsNotNone(view)
         header = list(view)[0]
-        title_column = list(header)[0]
-        self.assertEqual(title_column.attrib["width"], "1")
-        self.assertEqual(title_column.attrib["flex_grow"], "1")
+        title_row = named["launcher_title_row"]
+        self.assertIs(list(header)[0], title_row)
+        self.assertIs(list(header)[1], named["launcher_hint"])
+        self.assertEqual(header.attrib["flex_flow"], "column")
+        self.assertEqual(named["launcher_title"].attrib["width"], "1")
+        self.assertEqual(named["launcher_title"].attrib["flex_grow"], "1")
         available_width = 320 - 12 - 12
         page_navigation = named["page_navigation"]
-        self.assertEqual(page_navigation.attrib["width"], "112")
+        self.assertEqual(page_navigation.attrib["width"], "108")
         self.assertEqual(page_navigation.attrib["flex_flow"], "row")
         self.assertGreater(available_width - 5 - int(page_navigation.attrib["width"]),
                            150)
+        self.assertEqual(named["launcher_hint"].attrib["width"], "100%")
         for label_name in ("launcher_title", "launcher_hint"):
-            self.assertEqual(named[label_name].attrib["width"], "100%")
             self.assertEqual(named[label_name].attrib["long_mode"], "dot")
 
         source = (ROOT / "src" / "lvgl_main.c").read_text(encoding="utf-8")

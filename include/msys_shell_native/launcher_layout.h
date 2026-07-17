@@ -19,6 +19,13 @@ enum msys_native_launcher_item_kind {
     MSYS_NATIVE_LAUNCHER_FOLDER = 2
 };
 
+enum msys_native_launcher_drop_mode {
+    MSYS_NATIVE_LAUNCHER_DROP_NONE = 0,
+    MSYS_NATIVE_LAUNCHER_DROP_INSERT_BEFORE,
+    MSYS_NATIVE_LAUNCHER_DROP_INSERT_AFTER,
+    MSYS_NATIVE_LAUNCHER_DROP_GROUP
+};
+
 typedef struct msys_native_launcher_item {
     enum msys_native_launcher_item_kind kind;
     unsigned int page;
@@ -108,6 +115,36 @@ int msys_native_launcher_add_to_folder(
     size_t folder,
     size_t page_capacity,
     size_t *folder_index
+);
+
+/* Move one member back to Home. A two-item folder is dissolved so neither
+ * application remains trapped in a one-item folder. */
+int msys_native_launcher_extract_folder_member(
+    msys_native_launcher_layout *layout,
+    size_t folder,
+    size_t member,
+    unsigned int target_page,
+    size_t target_position,
+    size_t page_capacity,
+    size_t *new_index
+);
+
+/* Pure gesture/drop decisions shared by LVGL and deterministic tests. */
+int msys_native_launcher_swipe_page(
+    unsigned int current_page,
+    unsigned int page_count,
+    int displacement,
+    int viewport_width
+);
+
+enum msys_native_launcher_drop_mode msys_native_launcher_drop_mode_at(
+    int x,
+    int y,
+    int left,
+    int top,
+    int right,
+    int bottom,
+    int allow_group
 );
 
 int msys_native_launcher_rename_folder(

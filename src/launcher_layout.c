@@ -521,11 +521,20 @@ int msys_native_launcher_move(
     msys_native_launcher_item moved;
     size_t insertion;
     size_t on_page;
+    size_t source_position = 0u;
+    size_t index;
     if (layout == NULL || source >= layout->count || page_capacity == 0u) return 0;
     if (target_page > msys_native_launcher_page_count(layout)) return 0;
     on_page = msys_native_launcher_page_items(layout, target_page, NULL, 0u);
     if (target_position > on_page) target_position = on_page;
     moved = layout->items[source];
+    if (moved.page == target_page) {
+        for (index = 0u; index < source; index++) {
+            if (layout->items[index].page == target_page) source_position++;
+        }
+        /* target_position names the visible gap before removal. */
+        if (target_position > source_position) target_position--;
+    }
     memmove(
         &layout->items[source],
         &layout->items[source + 1u],
@@ -543,7 +552,6 @@ int msys_native_launcher_move(
     layout->count++;
     msys_native_launcher_compact_pages(layout, page_capacity);
     if (new_index != NULL) {
-        size_t index;
         *new_index = 0u;
         for (index = 0u; index < layout->count; index++) {
             if (strcmp(layout->items[index].id, moved.id) == 0) {
@@ -655,6 +663,100 @@ int msys_native_launcher_add_to_folder(
         }
     }
     return 0;
+}
+
+int msys_native_launcher_extract_folder_member(
+    msys_native_launcher_layout *layout,
+    size_t folder,
+    size_t member,
+    unsigned int target_page,
+    size_t target_position,
+    size_t page_capacity,
+    size_t *new_index
+)
+{
+    msys_native_launcher_item extracted;
+    msys_native_launcher_item *entry;
+    size_t source;
+    if (
+        layout == NULL || folder >= layout->count || page_capacity == 0u ||
+        layout->items[folder].kind != MSYS_NATIVE_LAUNCHER_FOLDER ||
+        member >= layout->items[folder].member_count ||
+        layout->count >= MSYS_NATIVE_LAUNCHER_MAX_ITEMS
+    ) return 0;
+    memset(&extracted, 0, sizeof(extracted));
+    extracted.kind = MSYS_NATIVE_LAUNCHER_APP;
+    extracted.page = target_page;
+    (void)snprintf(extracted.id, sizeof(extracted.id), "%s",
+                   layout->items[folder].members[member]);
+    entry = &layout->items[folder];
+    memmove(
+        &entry->members[member], &entry->members[member + 1u],
+        (entry->member_count - member - 1u) * sizeof(entry->members[0])
+    );
+    entry->member_count--;
+    if (entry->member_count == 1u) {
+        char remaining[MSYS_NATIVE_COMPONENT_CAPACITY];
+        unsigned int page = entry->page;
+        (void)snprintf(remaining, sizeof(remaining), "%s", entry->members[0]);
+        memset(entry, 0, sizeof(*entry));
+        entry->kind = MSYS_NATIVE_LAUNCHER_APP;
+        entry->page = page;
+        (void)snprintf(entry->id, sizeof(entry->id), "%s", remaining);
+    }
+    source = layout->count;
+    layout->items[layout->count++] = extracted;
+    return msys_native_launcher_move(
+        layout, source, target_page, target_position, page_capacity, new_index
+    );
+}
+
+int msys_native_launcher_swipe_page(
+    unsigned int current_page,
+    unsigned int page_count,
+    int displacement,
+    int viewport_width
+)
+{
+    int threshold;
+    if (page_count == 0u || current_page >= page_count || viewport_width <= 0)
+        return (int)current_page;
+    threshold = viewport_width * 18 / 100;
+    if (threshold < 36) threshold = 36;
+    if (displacement <= -threshold && current_page + 1u < page_count)
+        return (int)(current_page + 1u);
+    if (displacement >= threshold && current_page > 0u)
+        return (int)(current_page - 1u);
+    return (int)current_page;
+}
+
+enum msys_native_launcher_drop_mode msys_native_launcher_drop_mode_at(
+    int x,
+    int y,
+    int left,
+    int top,
+    int right,
+    int bottom,
+    int allow_group
+)
+{
+    int width;
+    int height;
+    int inset_x;
+    int inset_y;
+    if (right < left || bottom < top || x < left || x > right || y < top ||
+        y > bottom)
+        return MSYS_NATIVE_LAUNCHER_DROP_NONE;
+    width = right - left + 1;
+    height = bottom - top + 1;
+    inset_x = width / 4;
+    inset_y = height / 5;
+    if (allow_group != 0 && x >= left + inset_x && x <= right - inset_x &&
+        y >= top + inset_y && y <= bottom - inset_y)
+        return MSYS_NATIVE_LAUNCHER_DROP_GROUP;
+    return x < left + width / 2
+        ? MSYS_NATIVE_LAUNCHER_DROP_INSERT_BEFORE
+        : MSYS_NATIVE_LAUNCHER_DROP_INSERT_AFTER;
 }
 
 int msys_native_launcher_rename_folder(

@@ -69,6 +69,15 @@ int main(void)
     }
     CHECK(msys_native_launcher_move(&layout, 4u, 0u, 1u, 4u, &index));
     CHECK(index == 1u && strcmp(layout.items[1].id, "org.example:five") == 0);
+    {
+        msys_native_launcher_layout inserted = layout;
+        CHECK(msys_native_launcher_move(&inserted, 0u, 0u, 3u, 4u,
+                                        &index));
+        CHECK(index == 2u);
+        CHECK(strcmp(inserted.items[0].id, "org.example:five") == 0);
+        CHECK(strcmp(inserted.items[1].id, "org.example:two") == 0);
+        CHECK(strcmp(inserted.items[2].id, "org.example:one") == 0);
+    }
     CHECK(msys_native_launcher_swap(&layout, 0u, 1u));
     CHECK(strcmp(layout.items[0].id, "org.example:five") == 0);
     CHECK(msys_native_launcher_swap(&layout, 0u, 1u));
@@ -89,6 +98,49 @@ int main(void)
         &layout, layout.count - 1u, folder, 4u, &folder
     ));
     CHECK(layout.items[folder].member_count == 3u);
+    {
+        msys_native_launcher_layout extracted = layout;
+        size_t extracted_folder = folder;
+        CHECK(msys_native_launcher_extract_folder_member(
+            &extracted, extracted_folder, 1u, 0u, 0u, 4u, &index
+        ));
+        CHECK(extracted.items[index].kind == MSYS_NATIVE_LAUNCHER_APP);
+        CHECK(strcmp(extracted.items[index].id, "org.example:five") == 0);
+        CHECK(msys_native_launcher_find_app(
+            &extracted, "org.example:two", &extracted_folder, &member
+        ));
+        CHECK(extracted.items[extracted_folder].member_count == 2u);
+        CHECK(msys_native_launcher_extract_folder_member(
+            &extracted, extracted_folder, 0u, 0u, 2u, 4u, &index
+        ));
+        CHECK(msys_native_launcher_find_app(
+            &extracted, "org.example:two", &index, &member
+        ));
+        CHECK(extracted.items[index].kind == MSYS_NATIVE_LAUNCHER_APP);
+        CHECK(msys_native_launcher_find_app(
+            &extracted, "org.example:four", &index, &member
+        ));
+        CHECK(extracted.items[index].kind == MSYS_NATIVE_LAUNCHER_APP);
+    }
+    CHECK(msys_native_launcher_swipe_page(0u, 3u, -58, 320) == 1);
+    CHECK(msys_native_launcher_swipe_page(1u, 3u, 58, 320) == 0);
+    CHECK(msys_native_launcher_swipe_page(0u, 3u, 40, 320) == 0);
+    CHECK(msys_native_launcher_swipe_page(2u, 3u, -100, 320) == 2);
+    CHECK(msys_native_launcher_drop_mode_at(
+        50, 50, 10, 10, 90, 90, 1
+    ) == MSYS_NATIVE_LAUNCHER_DROP_GROUP);
+    CHECK(msys_native_launcher_drop_mode_at(
+        14, 50, 10, 10, 90, 90, 1
+    ) == MSYS_NATIVE_LAUNCHER_DROP_INSERT_BEFORE);
+    CHECK(msys_native_launcher_drop_mode_at(
+        86, 50, 10, 10, 90, 90, 1
+    ) == MSYS_NATIVE_LAUNCHER_DROP_INSERT_AFTER);
+    CHECK(msys_native_launcher_drop_mode_at(
+        50, 50, 10, 10, 90, 90, 0
+    ) == MSYS_NATIVE_LAUNCHER_DROP_INSERT_AFTER);
+    CHECK(msys_native_launcher_drop_mode_at(
+        9, 50, 10, 10, 90, 90, 1
+    ) == MSYS_NATIVE_LAUNCHER_DROP_NONE);
     layout.items[folder].large = 1;
     CHECK(msys_native_launcher_layout_commit(&layout));
     msys_native_launcher_layout_init(&loaded);

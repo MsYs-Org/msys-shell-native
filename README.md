@@ -1,6 +1,14 @@
 # MSYS Native Shell
 
-Current source version: `0.6.16`.
+Current source version: `0.6.17`.
+
+Version 0.6.17 gives the LVGL Home screen bounded, touch-following horizontal
+page gestures and separates insert, folder-group, and edge-dwell drop intents.
+Folder tiles open directly even after grouping, members can be dragged back to
+Home, and a dashed folder target or narrow insertion marker previews the exact
+result before release. The 320x480 probe also asserts that the full-width hint
+row never overlaps the compact page controls and that idle Launcher damage
+still settles to zero.
 
 Version 0.6.16 makes the parity-complete LVGL shell the supervised default and
 keeps Xlib as an explicit manual fallback, preventing two full Shell processes
