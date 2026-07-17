@@ -23,8 +23,8 @@
                    style_bg_color="#ffffff" style_border_width="1"
                    style_border_color="#dce3ee">
           <lv_label text="&lt;" style_text_font="msys_16" align="center"/>
-          <event_cb trigger="clicked" callback="shell_action"
-                    user_data="launcher-previous"/>
+          <lv_event-call-function trigger="clicked" callback="shell_action"
+                                  user_data="launcher-previous"/>
         </lv_button>
         <lv_label name="page_label" text="1 / 1" width="40" height="32"
                   style_text_font="msys_14" style_text_color="#69758a"
@@ -33,8 +33,8 @@
                    style_bg_color="#ffffff" style_border_width="1"
                    style_border_color="#dce3ee">
           <lv_label text="&gt;" style_text_font="msys_16" align="center"/>
-          <event_cb trigger="clicked" callback="shell_action"
-                    user_data="launcher-next"/>
+          <lv_event-call-function trigger="clicked" callback="shell_action"
+                                  user_data="launcher-next"/>
         </lv_button>
       </lv_obj>
     </lv_obj>
