@@ -17,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.27")
+        self.assertEqual(self.document["package"]["version"], "0.6.28")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.27"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.28"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "manual")
@@ -264,6 +264,48 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("XGetImage", pixel_probe)
         self.assertIn("XGetPixel", pixel_probe)
         self.assertIn("image->green_mask", pixel_probe)
+
+    def test_lvgl_home_drag_proxies_and_adjacent_page_are_real_objects(self) -> None:
+        source = (ROOT / "src" / "lvgl_main.c").read_text(encoding="utf-8")
+        proxy_start = source.rindex("static lv_obj_t *launcher_drag_proxy_create(")
+        preview_start = source.rindex("static void launcher_page_preview_show(")
+        proxy = source[
+            proxy_start:preview_start
+        ]
+        self.assertIn("screen = lv_obj_get_screen(source)", proxy)
+        self.assertIn("LV_OBJ_FLAG_FLOATING", proxy)
+        self.assertIn("lv_obj_set_style_opa(source, LV_OPA_TRANSP", proxy)
+        self.assertIn("lv_obj_move_to_index(proxy, -1)", proxy)
+        item_drag = source[
+            source.index("static void launcher_item_event_cb"):
+            source.index("static int launcher_folder_drop_is_outside")
+        ]
+        self.assertIn("launcher_drag_proxy_create(shell, object, item", item_drag)
+        self.assertIn("launcher_drag_proxy_move(shell, dx, dy)", item_drag)
+
+        member = source[
+            source.index("static void launcher_folder_member_event_cb"):
+            source.index("static void launcher_page_event_cb")
+        ]
+        self.assertIn("launcher_drag_proxy_create(shell, object, NULL", member)
+        self.assertIn("launcher_folder_drag_feedback", member)
+        self.assertIn("msys_native_launcher_extract_folder_member", member)
+
+        preview = source[
+            preview_start:source.index("static void launcher_resolve_grid_geometry",
+                                       preview_start)
+        ]
+        self.assertIn("target_page = direction < 0", preview)
+        self.assertIn("msys_native_launcher_page_items", preview)
+        self.assertIn("launcher_visual_tile_create", preview)
+        self.assertIn("launcher_set_translate_x(preview, translate_x)", preview)
+        swipe = source[
+            source.index("static void launcher_page_event_cb"):
+            source.index("static void item_event_cb")
+        ]
+        self.assertIn("launcher_page_preview_show(shell, dx < 0 ? 1 : -1, dx)",
+                      swipe)
+        self.assertIn("launcher_settle_page_preview(shell, dx)", swipe)
 
     def test_phase_two_role_boundary_does_not_claim_missing_contracts(self) -> None:
         source = (ROOT / "README.md").read_text(encoding="utf-8")

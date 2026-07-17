@@ -1,10 +1,14 @@
 # MSYS Native Shell
 
-Current source version: `0.6.27`.
+Current source version: `0.6.28`.
 
-Version 0.6.27 clears the phone folder overlay after launching a member so the
-foreground application receives Back normally, and positions launch masks from
-the active status-bar inset in both normal and immersive layouts. Version 0.6.26
+Version 0.6.28 keeps a dragged Home icon in a root-level floating proxy,
+provides a continuous, highlighted folder-member proxy while extracting it,
+and renders the adjacent Home page under the finger before completing or
+cancelling the page animation. Version 0.6.27 clears the phone folder overlay
+after launching a member so the foreground application receives Back normally,
+and positions launch masks from the active status-bar inset in both normal and
+immersive layouts. Version 0.6.26
 resizes the shared LVGL X11 surfaces atomically when mobile
 status/navigation visibility or buttons/pill preferences change.  The X11
 workarea and LVGL buffers now move together, so reducing the pill to 24px or
