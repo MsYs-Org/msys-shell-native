@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.13"
+#define APP_VERSION "0.6.14"
 #define SURFACE_COUNT 7u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -806,9 +806,11 @@ static void pill_event_cb(lv_event_t *event)
 {
     shell_state *shell = lv_event_get_user_data(event);
     lv_event_code_t code = lv_event_get_code(event);
-    lv_obj_t *pill = lv_event_get_current_target(event);
+    lv_obj_t *pill;
     lv_point_t point;
-    if(shell == NULL || pill == NULL) return;
+    if(shell == NULL) return;
+    pill = view_object(&shell->views[SURFACE_NAVIGATION], "navigation_pill");
+    if(pill == NULL) return;
     if(code == LV_EVENT_PRESSED && event_point(event, &point) != 0) {
         msys_native_gesture_begin(&shell->pill_gesture, point.y, monotonic_ms());
         msys_ui_animate_press(pill, shell->policy, true);
@@ -1677,8 +1679,9 @@ static void configure_interactions(shell_state *shell)
         lv_obj_set_flag(buttons, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode == 0);
     if(pill_area != NULL)
         lv_obj_set_flag(pill_area, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode != 0);
-    if(pill != NULL)
-        lv_obj_add_event_cb(pill, pill_event_cb, LV_EVENT_ALL, shell);
+    if(pill_area != NULL)
+        lv_obj_add_event_cb(pill_area, pill_event_cb, LV_EVENT_ALL, shell);
+    if(pill_area != NULL) lv_obj_add_flag(pill_area, LV_OBJ_FLAG_CLICKABLE);
 }
 
 static void localize_documents(shell_state *shell)
@@ -2166,8 +2169,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.13\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.13\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.14\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.14\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -2385,7 +2388,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.13\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.14\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","
