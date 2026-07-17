@@ -19,8 +19,8 @@
       "name": "Native desktop shell",
       "runtime": "native",
       "exec": ["@package/bin/msys-shell-native"],
-      "lifecycle": "background",
-      "restart": "on-failure",
+      "lifecycle": "manual",
+      "restart": "never",
       "readiness": {"mode": "mipc-ready", "timeout_ms": 8000},
       "after": [
         "org.msys.openstick.ch347:x11-spi-touch-output",
@@ -97,29 +97,29 @@
         {
           "role": "launcher",
           "exclusive": true,
-          "priority": 90,
+          "priority": 89,
           "x-msys-contract": {
             "id": "org.msys.role.launcher.v1",
             "version": "1.0.0"
           }
         },
-        {"role": "system-chrome", "exclusive": true, "priority": 90},
+        {"role": "system-chrome", "exclusive": true, "priority": 89},
         {
           "role": "navigation-bar",
           "exclusive": true,
-          "priority": 90,
+          "priority": 89,
           "x-msys-contract": {
             "id": "org.msys.role.navigation-bar.v1",
             "version": "1.0.0"
           }
         },
-        {"role": "task-switcher", "exclusive": true, "priority": 90},
-        {"role": "notification-presenter", "exclusive": true, "priority": 90},
-        {"role": "notification-center", "exclusive": true, "priority": 90}
+        {"role": "task-switcher", "exclusive": true, "priority": 89},
+        {"role": "notification-presenter", "exclusive": true, "priority": 89},
+        {"role": "notification-center", "exclusive": true, "priority": 89}
       ],
       "x-msys-ui-provider": {
         "id": "xlib",
-        "default": true
+        "fallback": true
       }
     },
     {
@@ -131,8 +131,8 @@
         "--output",
         "spi"
       ],
-      "lifecycle": "manual",
-      "restart": "never",
+      "lifecycle": "background",
+      "restart": "on-failure",
       "readiness": {"mode": "mipc-ready", "timeout_ms": 8000},
       "after": [
         "org.msys.openstick.ch347:x11-spi-touch-output",
@@ -239,30 +239,31 @@
         {
           "role": "launcher",
           "exclusive": true,
-          "priority": 89,
+          "priority": 100,
           "x-msys-contract": {
             "id": "org.msys.role.launcher.v1",
             "version": "1.0.0"
           }
         },
-        {"role": "system-chrome", "exclusive": true, "priority": 89},
+        {"role": "system-chrome", "exclusive": true, "priority": 100},
         {
           "role": "navigation-bar",
           "exclusive": true,
-          "priority": 89,
+          "priority": 100,
           "x-msys-contract": {
             "id": "org.msys.role.navigation-bar.v1",
             "version": "1.0.0"
           }
         },
-        {"role": "task-switcher", "exclusive": true, "priority": 89},
-        {"role": "notification-presenter", "exclusive": true, "priority": 89},
-        {"role": "notification-center", "exclusive": true, "priority": 89}
+        {"role": "task-switcher", "exclusive": true, "priority": 100},
+        {"role": "notification-presenter", "exclusive": true, "priority": 100},
+        {"role": "notification-center", "exclusive": true, "priority": 100}
       ],
       "x-msys-ui-provider": {
         "id": "lvgl",
         "fallback_component": "org.msys.shell.native:desktop-shell",
-        "phase": "preview"
+        "default": true,
+        "phase": "production"
       }
     }
   ]

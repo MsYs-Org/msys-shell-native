@@ -22,7 +22,8 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn('#define APP_VERSION "0.6.6"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
-        self.assertEqual(self.component["lifecycle"], "background")
+        self.assertEqual(self.component["lifecycle"], "manual")
+        self.assertEqual(self.component["restart"], "never")
         self.assertNotIn("MSYS_NATIVE_NAV_MODE", self.component.get("env", {}))
         self.assertEqual(self.component["readiness"]["mode"], "mipc-ready")
         roles = {
@@ -32,22 +33,22 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertEqual(
             roles,
             {
-                "launcher": 90,
-                "system-chrome": 90,
-                "navigation-bar": 90,
-                "task-switcher": 90,
-                "notification-presenter": 90,
-                "notification-center": 90,
+                "launcher": 89,
+                "system-chrome": 89,
+                "navigation-bar": 89,
+                "task-switcher": 89,
+                "notification-presenter": 89,
+                "notification-center": 89,
             },
         )
         self.assertTrue(all(item["exclusive"] for item in self.component["provides"]))
 
-    def test_lvgl_preview_is_one_process_with_dynamic_role_surfaces(self) -> None:
+    def test_lvgl_default_is_one_process_with_dynamic_role_surfaces(self) -> None:
         component = self.lvgl_component
         self.assertEqual(component["id"], "desktop-shell-lvgl")
         self.assertEqual(component["runtime"], "native")
-        self.assertEqual(component["lifecycle"], "manual")
-        self.assertEqual(component["restart"], "never")
+        self.assertEqual(component["lifecycle"], "background")
+        self.assertEqual(component["restart"], "on-failure")
         self.assertEqual(
             component["exec"],
             ["@package/files/bin/msys-shell-lvgl", "--output", "spi"],
@@ -62,6 +63,9 @@ class NativeShellManifestTests(unittest.TestCase):
             {"launcher", "system-chrome", "navigation-bar", "task-switcher",
              "notification-presenter", "notification-center"},
         )
+        self.assertTrue(all(item["priority"] == 100 for item in component["provides"]))
+        self.assertTrue(component["x-msys-ui-provider"]["default"])
+        self.assertEqual(component["x-msys-ui-provider"]["phase"], "production")
         self.assertEqual(
             component["x-msys-ui-provider"]["fallback_component"],
             "org.msys.shell.native:desktop-shell",

@@ -48,10 +48,10 @@ The 320x480 mobile geometry is fixed to 42-pixel bars and the exact
 then presents a two-column grid with real PPM thumbnails and PSS/RSS values.
 The shared runtime retains exact LVGL invalid rectangles and zero idle flush.
 
-`desktop-shell-lvgl` is deliberately a manual preview provider until message
-history, Quick Controls, launcher folders/editing, pill gestures, and all
-existing preference RPCs reach parity. `desktop-shell` remains the default
-Xlib fallback and no profile is silently switched by this package revision.
+`desktop-shell-lvgl` is now the supervised default provider after message
+history, Quick Controls, launcher folders/editing, pill gestures, preference
+RPCs, real application tiles, and idle zero-flush reached parity. The Xlib
+`desktop-shell` remains a manual fallback and is not kept resident beside it.
 
 Version 0.4.0 replaces the mobile Launcher's unbounded vertical application
 list with fixed-capacity horizontal pages. `grid_columns`, `grid_rows`, and
@@ -180,13 +180,12 @@ live volume/mute state, or a truthful unavailable reason. Its roughly 1/5,
 leaving enough width for a headset name or degraded reason. PCM never crosses
 mIPC.
 
-The default Xlib component advertises only the roles it actually serves: `launcher`,
+The Xlib fallback component advertises only the roles it actually serves: `launcher`,
 `system-chrome`, `navigation-bar`, `task-switcher`,
-`notification-presenter`, and `notification-center`. Each has priority 90. An integrating profile should
-select the single `org.msys.shell.native:desktop-shell` component for the roles
-it wants this process to own and supervise that component once. The manual
-LVGL preview claims only its four implemented roles at priority 89, so merely
-installing the package cannot displace the selected fallback.
+`notification-presenter`, and `notification-center`. Each has fallback
+priority 89. The supervised LVGL component owns the same six roles at priority
+100, so role calls cannot wake the fallback while LVGL is healthy. An explicit
+role selection can still activate Xlib for recovery.
 
 Navigation mode remains profile-owned: the regular mobile/desktop profiles
 export `MSYS_NATIVE_NAV_MODE=buttons`, while `mobile-spi-pill` exports `pill`.
