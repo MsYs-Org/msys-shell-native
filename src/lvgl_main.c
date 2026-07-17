@@ -904,6 +904,15 @@ static void launcher_resolve_grid_geometry(shell_view *view, lv_obj_t *root,
      * owns header/grid/status, so enforce its required vertical structure at
      * the Launcher boundary after resolving that actual XML object. */
     lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
+    /* The XML loader may expose empty self-closing siblings through its
+     * component wrapper.  Launcher owns these three objects, so normalize
+     * their parent and order once before applying the page layout. */
+    if(lv_obj_get_parent(header) != root) lv_obj_set_parent(header, root);
+    if(lv_obj_get_parent(grid) != root) lv_obj_set_parent(grid, root);
+    if(lv_obj_get_parent(status) != root) lv_obj_set_parent(status, root);
+    lv_obj_move_to_index(header, 0);
+    lv_obj_move_to_index(grid, 1);
+    lv_obj_move_to_index(status, 2);
     lv_obj_update_layout(root);
     row_gap = lv_obj_get_style_pad_row(root, LV_PART_MAIN);
     available = lv_obj_get_content_height(root) - lv_obj_get_height(header) -
