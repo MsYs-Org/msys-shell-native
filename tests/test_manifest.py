@@ -139,6 +139,8 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("lv_obj_move_to_index(header, 0)", source)
         self.assertIn("lv_obj_move_to_index(grid, 1)", source)
         self.assertIn("lv_obj_move_to_index(status, 2)", source)
+        self.assertIn('"navigation_root"', source)
+        self.assertIn("lv_obj_set_parent(pill_area, navigation_root)", source)
         self.assertIn("lv_obj_set_flex_grow(grid, 0)", source)
         self.assertIn("launcher geometry apps=%zu", source)
         self.assertIn('"--probe-launcher"', source)

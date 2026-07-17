@@ -1642,12 +1642,24 @@ static void configure_interactions(shell_state *shell)
     lv_obj_t *buttons;
     lv_obj_t *pill_area;
     lv_obj_t *pill;
+    lv_obj_t *navigation_root;
     size_t index;
     for(index = 0u; index < sizeof(feedback) / sizeof(feedback[0]); index++)
         add_feedback(shell, feedback[index].surface, feedback[index].name);
     buttons = view_object(&shell->views[SURFACE_NAVIGATION], "button_navigation");
     pill_area = view_object(&shell->views[SURFACE_NAVIGATION], "pill_navigation");
     pill = view_object(&shell->views[SURFACE_NAVIGATION], "navigation_pill");
+    navigation_root = view_object(&shell->views[SURFACE_NAVIGATION],
+                                  "navigation_root");
+    if(navigation_root != NULL && buttons != NULL && pill_area != NULL) {
+        if(lv_obj_get_parent(buttons) != navigation_root)
+            lv_obj_set_parent(buttons, navigation_root);
+        if(lv_obj_get_parent(pill_area) != navigation_root)
+            lv_obj_set_parent(pill_area, navigation_root);
+        lv_obj_move_to_index(buttons, 0);
+        lv_obj_move_to_index(pill_area, 1);
+        lv_obj_update_layout(navigation_root);
+    }
     if(buttons != NULL)
         lv_obj_set_flag(buttons, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode == 0);
     if(pill_area != NULL)
