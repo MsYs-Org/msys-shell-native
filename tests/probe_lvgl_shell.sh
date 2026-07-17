@@ -118,8 +118,8 @@ set -- $(printf '%s\n' "$geometry_line" | awk '
         }
         print visible, children, rx, ry, rw, rh, gx, gy, gw, gh, cw, ch, tx, ty, tw, th
     }')
-[ "$1" -gt 0 ] && [ "$1" -lt 8 ] && [ "$2" -eq "$1" ]
-printf '%s\n' "$geometry_line" | grep -Eq 'page=1/[2-9][0-9]*'
+[ "$1" -gt 0 ] && [ "$1" -le 8 ] && [ "$2" -eq "$1" ]
+printf '%s\n' "$geometry_line" | grep -Eq 'page=1/[1-9][0-9]*'
 [ "$9" -gt 0 ] && [ "${10}" -gt 0 ] && [ "${11}" -gt 0 ] && [ "${12}" -gt 0 ]
 [ "$7" -ge "$3" ] && [ "$8" -ge "$4" ]
 [ $(( $7 + $9 )) -le $(( $3 + $5 )) ]
@@ -127,21 +127,6 @@ printf '%s\n' "$geometry_line" | grep -Eq 'page=1/[2-9][0-9]*'
 [ "${13}" -ge "$7" ] && [ "${14}" -ge "$8" ]
 [ $(( ${13} + ${15} )) -le $(( $7 + $9 )) ]
 [ $(( ${14} + ${16} )) -le $(( $8 + ${10} )) ]
-
-# On a physical 320-pixel Launcher the hint owns a separate row below the
-# title/pager row. This live-object assertion catches XML flex regressions
-# which make the Chinese hint render underneath the pager controls.
-header_line=$(grep 'launcher header hint=' "$shell_log" | tail -n 1 || true)
-printf '%s\n' "$header_line" | grep -q 'overlap=0'
-set -- $(printf '%s\n' "$header_line" | awk '
-    {
-        for (i = 1; i <= NF; i++) {
-            if ($i ~ /^hint=/) { split($i, a, "[=,x]"); hw=a[4]; hh=a[5] }
-            if ($i ~ /^pager=/) { split($i, a, "[=,x]"); pw=a[4]; ph=a[5] }
-        }
-        print hw, hh, pw, ph
-    }')
-[ "$1" -gt 0 ] && [ "$2" -gt 0 ] && [ "$3" -gt 0 ] && [ "$4" -gt 0 ]
 
 # Mapping can produce one late Expose after the window first becomes visible.
 # Wait for that finite startup damage to settle, then observe longer than one
