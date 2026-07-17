@@ -1,6 +1,18 @@
 # MSYS Native Shell
 
-Current source version: `0.6.24`.
+Current source version: `0.6.25`.
+
+Version 0.6.25 restores the bounded, read-only background-process view in the
+LVGL Overview, keeps CPU and memory telemetry visible, and gives Overview a
+deterministic Back/close path. Home editing can now be ended by Done, Back,
+Home, or a blank-area tap. Folders open as a compact translucent phone-style
+panel over the existing Home page, with a scrolling three-column member grid
+and an outside drop boundary. Chrome uses bounded native notification and
+Wi-Fi signal glyphs instead of text buttons. The existing shell preferences
+now also accept `navigation_visibility` and `status_visibility` as `always` or
+`auto-hide`; Shell applies those choices through the existing window-manager
+`get_layout`/`set_layout` contract using 42-pixel buttons, a 24-pixel pill, or
+an 8-pixel immersive edge without restarting X11 or the display provider.
 
 Version 0.6.24 commits a consumed horizontal Home gesture on both LVGL
 `RELEASED` and `PRESS_LOST`. Following the finger translates the pressed grid,

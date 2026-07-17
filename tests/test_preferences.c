@@ -26,13 +26,15 @@ int main(void)
     CHECK(mkdtemp(root) != NULL);
     CHECK(setenv("MSYS_COMPONENT_STATE_DIR", root, 1) == 0);
     msys_native_preferences_defaults(&state);
+    CHECK(strcmp(state.navigation_visibility, "always") == 0);
+    CHECK(strcmp(state.status_visibility, "always") == 0);
     CHECK(msys_native_preferences_empty_request(" { } ") != 0);
     CHECK(msys_native_preferences_empty_request("{\"extra\":1}") == 0);
     CHECK(msys_native_preferences_merge(
         "{\"layout\":\"embedded\"}", &state, &changed
     ) == MSYS_NATIVE_PREFERENCES_OK);
     CHECK(msys_native_preferences_merge(
-        "{\"preferences\":{\"layout\":\"desktop\",\"accent_color\":\"#123ABC\",\"icon_size\":72,\"grid_columns\":5,\"grid_rows\":3,\"wallpaper_path\":\"/media/wall paper.ppm\",\"acrylic\":true,\"show_labels\":false}}",
+        "{\"preferences\":{\"layout\":\"desktop\",\"accent_color\":\"#123ABC\",\"icon_size\":72,\"grid_columns\":5,\"grid_rows\":3,\"wallpaper_path\":\"/media/wall paper.ppm\",\"acrylic\":true,\"show_labels\":false,\"navigation_visibility\":\"auto-hide\",\"status_visibility\":\"auto-hide\"}}",
         &state,
         &changed
     ) == MSYS_NATIVE_PREFERENCES_OK);
@@ -40,12 +42,17 @@ int main(void)
     CHECK(changed.icon_size == 72 && changed.show_labels == 0);
     CHECK(changed.grid_columns == 5 && changed.grid_rows == 3);
     CHECK(changed.acrylic == 1);
+    CHECK(strcmp(changed.navigation_visibility, "auto-hide") == 0);
+    CHECK(strcmp(changed.status_visibility, "auto-hide") == 0);
     CHECK(strcmp(changed.wallpaper_path, "/media/wall paper.ppm") == 0);
     CHECK(msys_native_preferences_merge(
         "{\"icon_size\":39}", &state, &changed
     ) == MSYS_NATIVE_PREFERENCES_BAD_VALUE);
     CHECK(msys_native_preferences_merge(
         "{\"grid_columns\":9}", &state, &changed
+    ) == MSYS_NATIVE_PREFERENCES_BAD_VALUE);
+    CHECK(msys_native_preferences_merge(
+        "{\"navigation_visibility\":\"sometimes\"}", &state, &changed
     ) == MSYS_NATIVE_PREFERENCES_BAD_VALUE);
     CHECK(msys_native_preferences_merge(
         "{\"layout\":\"mobile\",\"layout\":\"desktop\"}", &state, &changed

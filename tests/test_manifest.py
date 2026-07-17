@@ -17,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.24")
+        self.assertEqual(self.document["package"]["version"], "0.6.25")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.24"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.25"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "manual")
@@ -157,18 +157,12 @@ class NativeShellManifestTests(unittest.TestCase):
         title_row = named["launcher_title_row"]
         self.assertIs(list(header)[0], title_row)
         self.assertIs(list(header)[1], named["launcher_hint"])
-        self.assertEqual(header.attrib["flex_flow"], "column")
-        self.assertEqual(named["launcher_title"].attrib["width"], "1")
-        self.assertEqual(named["launcher_title"].attrib["flex_grow"], "1")
-        available_width = 320 - 12 - 12
+        self.assertEqual(header.attrib["hidden"], "true")
+        self.assertEqual(named["launcher_title"].attrib["hidden"], "true")
         page_navigation = named["page_navigation"]
-        self.assertEqual(page_navigation.attrib["width"], "108")
-        self.assertEqual(page_navigation.attrib["flex_flow"], "row")
-        self.assertGreater(available_width - 5 - int(page_navigation.attrib["width"]),
-                           150)
-        self.assertEqual(named["launcher_hint"].attrib["width"], "100%")
-        for label_name in ("launcher_title", "launcher_hint"):
-            self.assertEqual(named[label_name].attrib["long_mode"], "dot")
+        self.assertEqual(page_navigation.attrib["hidden"], "true")
+        self.assertIn("launcher_edit_done", named)
+        self.assertEqual(named["launcher_edit_done"].attrib["hidden"], "true")
 
         source = (ROOT / "src" / "lvgl_main.c").read_text(encoding="utf-8")
         reply_start = "if(call.kind == PENDING_APPS) {\n        if(msys_native_parse_apps"
@@ -205,11 +199,16 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("ui_bitmap transition_icon", source)
         self.assertIn("bitmap_load(&shell->transition_icon", source)
         self.assertIn("bitmap_dispose(&shell->transition_icon)", source)
-        folder_render = render[
-            render.index("if(shell->launcher_folder >= 0"):
-            render.index("set_label_if_changed(view, \"launcher_title\", localized")
+        folder_start = source.index("static void render_launcher_folder_overlay")
+        folder_render = source[
+            folder_start:
+            source.index("static void render_launcher(shell_state *shell)\n{",
+                         folder_start)
         ]
-        self.assertIn("msys_ui_theme_font(view->theme, 14)", folder_render)
+        self.assertIn("lv_obj_set_size(panel, 284, 292)", folder_render)
+        self.assertIn("marquee_event_cb", folder_render)
+        self.assertIn("msys_ui_animate_opening(panel", folder_render)
+        self.assertIn("launcher_folder_overlay_event_cb", folder_render)
         self.assertNotIn("MSYS_UI_ALLOW_ACRYLIC", source)
         self.assertNotIn("allow_acrylic", source)
         swipe = source[
@@ -240,7 +239,7 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("lv_obj_set_parent(pill_area, navigation_root)", source)
         self.assertIn("lv_obj_set_parent(pill, navigation_root)", source)
         self.assertIn("lv_obj_add_flag(pill, LV_OBJ_FLAG_FLOATING)", source)
-        self.assertIn("lv_obj_set_style_bg_opa(pill, LV_OPA_COVER", source)
+        self.assertIn("lv_obj_set_style_bg_opa(pill,", source)
         self.assertIn("lv_obj_add_event_cb(pill_area, pill_event_cb", source)
         self.assertIn("lv_obj_add_event_cb(page_next, xml_action_cb", source)
         self.assertIn("lv_obj_set_flex_grow(grid, 0)", source)

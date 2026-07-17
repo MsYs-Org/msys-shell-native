@@ -27,7 +27,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.24"
+#define APP_VERSION "0.6.25"
 #define SURFACE_COUNT 8u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -46,6 +46,8 @@
 #define LAUNCHER_EDGE_PX 24
 #define LAUNCHER_EDGE_DWELL_MS 420u
 #define LAUNCHER_SWIPE_SLOP_PX 12
+#define NAVIGATION_PILL_HEIGHT 24
+#define SYSTEM_EDGE_HEIGHT 8
 
 enum shell_surface_id {
     SURFACE_LAUNCHER = 0,
@@ -63,6 +65,7 @@ enum pending_kind {
     PENDING_APPS,
     PENDING_TASKS,
     PENDING_TASK_RESOURCES,
+    PENDING_PROCESS_LIST,
     PENDING_START,
     PENDING_BEGIN_TRANSITION,
     PENDING_CANCEL_TRANSITION,
@@ -74,7 +77,9 @@ enum pending_kind {
     PENDING_SETTINGS,
     PENDING_DETAILS,
     PENDING_UNINSTALL,
-    PENDING_QUICK_ACTION
+    PENDING_QUICK_ACTION,
+    PENDING_LAYOUT_GET,
+    PENDING_LAYOUT_SET
 };
 
 enum binding_action {
@@ -137,6 +142,9 @@ struct shell_state {
     int apps_loaded;
     msys_native_task tasks[MSYS_NATIVE_MAX_TASKS];
     size_t task_count;
+    msys_native_process processes[MSYS_NATIVE_MAX_PROCESSES];
+    size_t process_count;
+    msys_native_process_metadata process_metadata;
     ui_bitmap app_icons[MSYS_NATIVE_MAX_APPS];
     ui_bitmap task_previews[MSYS_NATIVE_MAX_TASKS];
     ui_bitmap transition_icon;
@@ -159,6 +167,9 @@ struct shell_state {
     uint64_t run_until;
     int overview_visible;
     int overview_pending;
+    int process_view;
+    int process_include_system;
+    int process_state;
     int notification_visible;
     int controls_visible;
     int toast_visible;
@@ -185,6 +196,11 @@ struct shell_state {
     int watch_ui;
     int chinese;
     char wifi_device[MSYS_NATIVE_COMPONENT_CAPACITY];
+    char layout_profile[16];
+    char layout_orientation_policy[16];
+    char layout_orientation[16];
+    int chrome_height;
+    int navigation_height;
     char ui_dir[PATH_MAX];
     char clock_text[16];
     msys_native_preferences preferences;
@@ -215,10 +231,15 @@ struct shell_state {
     int launcher_drag_point_valid;
     lv_obj_t *launcher_drag_object;
     lv_obj_t *launcher_drop_preview;
+    lv_obj_t *launcher_folder_overlay;
+    lv_obj_t *launcher_folder_panel;
+    lv_obj_t *launcher_folder_grid;
     int launcher_swipe_active;
     int launcher_swipe_dx;
     lv_point_t launcher_swipe_origin;
     lv_obj_t *launcher_tiles[MSYS_NATIVE_LAUNCHER_MAX_ITEMS];
+    lv_obj_t *wifi_bars[4];
+    lv_obj_t *notification_badge;
 };
 
 static volatile sig_atomic_t stopping;
@@ -848,6 +869,7 @@ static ui_binding *new_binding(shell_state *shell, enum binding_action action,
 
 static void request_apps(shell_state *shell);
 static void request_tasks(shell_state *shell);
+static void request_processes(shell_state *shell);
 static void show_overview(shell_state *shell);
 static void hide_overview(shell_state *shell);
 static void show_notification_center(shell_state *shell);
@@ -858,8 +880,13 @@ static void render_launcher(shell_state *shell);
 static void render_overview(shell_state *shell);
 static void render_notifications(shell_state *shell);
 static void request_wifi_inventory(shell_state *shell);
+static void request_layout(shell_state *shell);
 static void send_navigation(shell_state *shell, const char *action);
 static int event_point(lv_event_t *event, lv_point_t *point);
+static void feedback_event_cb(lv_event_t *event);
+static void notification_indicator_update(shell_state *shell);
+static void wifi_icon_update(shell_state *shell);
+static void apply_launcher_preferences(shell_state *shell);
 
 static void start_app_at(shell_state *shell, size_t index, lv_obj_t *origin)
 {
@@ -1431,41 +1458,17 @@ static int launcher_folder_drop_is_outside(shell_state *shell,
                                            lv_obj_t *object,
                                            lv_point_t point)
 {
-    lv_obj_t *grid = view_object(&shell->views[SURFACE_LAUNCHER], "app_grid");
     lv_area_t area;
-    uint32_t index;
-    uint32_t count;
-    if(grid == NULL) return 1;
-    lv_obj_get_coords(grid, &area);
-    if(point.x <= LAUNCHER_EDGE_PX ||
-       point.x >= ROOT_WIDTH - LAUNCHER_EDGE_PX || point.y < area.y1 ||
-       point.y > area.y2)
-        return 1;
+    (void)object;
+    if(shell->launcher_folder_panel == NULL ||
+       !lv_obj_is_valid(shell->launcher_folder_panel)) return 1;
+    lv_obj_get_coords(shell->launcher_folder_panel, &area);
+    if(point.x < area.x1 || point.x > area.x2 ||
+       point.y < area.y1 || point.y > area.y2) return 1;
 
-    /* A small long-press wobble should not pull an item out.  LVGL includes
-     * style translation in the live coordinates, so recover the tile's
-     * original slot before testing it. */
-    lv_obj_get_coords(object, &area);
-    area.x1 -= shell->launcher_drag_dx;
-    area.x2 -= shell->launcher_drag_dx;
-    area.y1 -= shell->launcher_drag_dy;
-    area.y2 -= shell->launcher_drag_dy;
-    if(point.x >= area.x1 && point.x <= area.x2 &&
-       point.y >= area.y1 && point.y <= area.y2)
-        return 0;
-
-    /* Empty folder space is an intentional extract target.  Landing on a
-     * sibling keeps the member in the folder until in-folder reorder exists. */
-    count = lv_obj_get_child_count(grid);
-    for(index = 0u; index < count; index++) {
-        lv_obj_t *child = lv_obj_get_child(grid, (int32_t)index);
-        if(child == NULL || child == object) continue;
-        lv_obj_get_coords(child, &area);
-        if(point.x >= area.x1 && point.x <= area.x2 &&
-           point.y >= area.y1 && point.y <= area.y2)
-            return 0;
-    }
-    return 1;
+    /* The iOS-style folder panel is the extraction boundary.  A member only
+     * leaves the folder after the pointer visibly crosses that panel. */
+    return 0;
 }
 
 static void launcher_folder_member_event_cb(lv_event_t *event)
@@ -1586,11 +1589,17 @@ static void launcher_page_event_cb(lv_event_t *event)
     lv_obj_t *grid = lv_event_get_current_target(event);
     lv_point_t point;
     if(shell == NULL || grid == NULL) return;
-    if(shell->launcher_editing != 0 || shell->launcher_folder >= 0) {
+    if(shell->launcher_editing != 0) {
+        if(code == LV_EVENT_CLICKED &&
+           lv_event_get_target_obj(event) == grid) {
+            launcher_finish_edit(shell);
+            return;
+        }
         if(code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST)
             shell->launcher_swipe_active = 0;
         return;
     }
+    if(shell->launcher_folder >= 0) return;
     if(code == LV_EVENT_PRESSED && event_point(event, &point) != 0) {
         shell->launcher_swipe_active = 1;
         shell->launcher_swipe_origin = point;
@@ -1787,6 +1796,47 @@ static lv_obj_t *make_fallback_icon(shell_view *view, lv_obj_t *parent,
     return icon;
 }
 
+static lv_obj_t *make_folder_icon(shell_state *shell, shell_view *view,
+                                  lv_obj_t *parent,
+                                  const msys_native_launcher_item *folder,
+                                  int size)
+{
+    lv_obj_t *host;
+    int cell;
+    size_t member;
+    if(shell == NULL || view == NULL || parent == NULL || folder == NULL)
+        return NULL;
+    host = lv_obj_create(parent);
+    lv_obj_remove_flag(host, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(host, size, size);
+    lv_obj_set_style_radius(host, (int16_t)(size / 4), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(host, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(host, (lv_opa_t)196, LV_PART_MAIN);
+    lv_obj_set_style_border_width(host, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(host, lv_color_hex(0xd7deea), LV_PART_MAIN);
+    lv_obj_set_style_pad_all(host, 5, LV_PART_MAIN);
+    cell = (size - 14) / 2;
+    if(cell < 14) cell = 14;
+    for(member = 0u; member < folder->member_count && member < 4u; member++) {
+        size_t app_index;
+        lv_obj_t *icon;
+        int x;
+        int y;
+        if(!launcher_app_index(shell, folder->members[member], &app_index))
+            continue;
+        if(bitmap_load(&shell->app_icons[app_index],
+                       shell->apps[app_index].icon_path, cell, cell) != 0)
+            icon = make_image(host, &shell->app_icons[app_index], cell, cell);
+        else icon = make_fallback_icon(view, host,
+                                       shell->apps[app_index].name, cell);
+        if(icon == NULL) continue;
+        x = 4 + (int)(member % 2u) * (cell + 2);
+        y = 4 + (int)(member / 2u) * (cell + 2);
+        lv_obj_set_pos(icon, x, y);
+    }
+    return host;
+}
+
 static lv_obj_t *launcher_xml_root(shell_view *view)
 {
     lv_obj_t *root = view_object(view, "launcher_root");
@@ -1882,6 +1932,173 @@ static void launcher_report_geometry(shell_state *shell, lv_obj_t *root,
     }
 }
 
+static void launcher_folder_overlay_event_cb(lv_event_t *event)
+{
+    shell_state *shell = lv_event_get_user_data(event);
+    if(shell == NULL || lv_event_get_code(event) != LV_EVENT_CLICKED ||
+       lv_event_get_target_obj(event) != lv_event_get_current_target(event))
+        return;
+    shell->launcher_folder = -1;
+    shell->launcher_editing = 0;
+    render_launcher(shell);
+}
+
+static void marquee_set_translate_x(void *object, int32_t value)
+{
+    lv_obj_set_style_translate_x(object, value, LV_PART_MAIN);
+}
+
+static void marquee_event_cb(lv_event_t *event)
+{
+    lv_obj_t *label = lv_event_get_current_target(event);
+    const char *value;
+    const lv_font_t *font;
+    int32_t text_width;
+    int32_t visible_width;
+    int32_t distance;
+    lv_anim_t animation;
+    if(label == NULL || lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    value = lv_label_get_text(label);
+    font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+    if(value == NULL || font == NULL) return;
+    text_width = lv_text_get_width(value, (uint32_t)strlen(value), font,
+                                   lv_obj_get_style_text_letter_space(
+                                       label, LV_PART_MAIN));
+    visible_width = lv_obj_get_content_width(label);
+    distance = text_width - visible_width;
+    if(distance <= 2) return;
+    if(distance > 220) distance = 220;
+    lv_anim_delete(label, marquee_set_translate_x);
+    lv_anim_init(&animation);
+    lv_anim_set_var(&animation, label);
+    lv_anim_set_values(&animation, 0, -distance);
+    lv_anim_set_duration(&animation, (uint32_t)(500 + distance * 5));
+    lv_anim_set_playback_delay(&animation, 240u);
+    lv_anim_set_playback_duration(&animation, 320u);
+    lv_anim_set_exec_cb(&animation, marquee_set_translate_x);
+    lv_anim_set_path_cb(&animation, lv_anim_path_ease_in_out);
+    (void)lv_anim_start(&animation);
+}
+
+static void render_launcher_folder_overlay(shell_state *shell,
+                                           shell_view *view,
+                                           lv_obj_t *root,
+                                           size_t folder_index)
+{
+    const msys_native_launcher_item *folder;
+    lv_obj_t *overlay;
+    lv_obj_t *panel;
+    lv_obj_t *title;
+    lv_obj_t *grid;
+    size_t member;
+    if(shell == NULL || view == NULL || root == NULL ||
+       folder_index >= shell->launcher_layout.count) return;
+    folder = &shell->launcher_layout.items[folder_index];
+    if(folder->kind != MSYS_NATIVE_LAUNCHER_FOLDER) return;
+
+    overlay = lv_obj_create(root);
+    shell->launcher_folder_overlay = overlay;
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(overlay, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_pos(overlay, 0, 0);
+    lv_obj_set_style_radius(overlay, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(overlay, lv_color_hex(0x182033), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(overlay, (lv_opa_t)34, LV_PART_MAIN);
+    lv_obj_set_style_border_width(overlay, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(overlay, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(overlay, launcher_folder_overlay_event_cb,
+                        LV_EVENT_CLICKED, shell);
+
+    panel = lv_obj_create(overlay);
+    shell->launcher_folder_panel = panel;
+    lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(panel, 284, 292);
+    lv_obj_center(panel);
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_radius(panel, 28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0xf9fbff), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(panel, (lv_opa_t)226, LV_PART_MAIN);
+    lv_obj_set_style_border_width(panel, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(panel, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_set_style_pad_left(panel, 12, LV_PART_MAIN);
+    lv_obj_set_style_pad_right(panel, 12, LV_PART_MAIN);
+    lv_obj_set_style_pad_top(panel, 12, LV_PART_MAIN);
+    lv_obj_set_style_pad_bottom(panel, 10, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(panel, 8, LV_PART_MAIN);
+
+    title = lv_label_create(panel);
+    lv_obj_set_width(title, LV_PCT(100));
+    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_label_set_text(title, folder->name);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x182033), LV_PART_MAIN);
+    lv_obj_set_style_text_font(title, msys_ui_theme_font(view->theme, 20),
+                               LV_PART_MAIN);
+    lv_obj_add_flag(title, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(title, marquee_event_cb, LV_EVENT_CLICKED, shell);
+
+    grid = lv_obj_create(panel);
+    shell->launcher_folder_grid = grid;
+    lv_obj_set_width(grid, LV_PCT(100));
+    lv_obj_set_height(grid, 236);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START);
+    lv_obj_add_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(grid, LV_DIR_VER);
+    lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(grid, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(grid, 2, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(grid, 8, LV_PART_MAIN);
+    lv_obj_set_style_pad_column(grid, 7, LV_PART_MAIN);
+
+    for(member = 0u; member < folder->member_count; member++) {
+        size_t app_index;
+        ui_binding *binding;
+        lv_obj_t *tile;
+        lv_obj_t *icon;
+        lv_obj_t *name;
+        if(!launcher_app_index(shell, folder->members[member], &app_index))
+            continue;
+        binding = new_binding(shell, BIND_FOLDER_MEMBER, folder_index);
+        if(binding != NULL) binding->secondary = member;
+        tile = lv_button_create(grid);
+        lv_obj_add_flag(tile, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_set_size(tile, 76, 102);
+        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_radius(tile, 18, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(tile, lv_color_hex(0xffffff), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(tile, (lv_opa_t)170, LV_PART_MAIN);
+        lv_obj_set_style_border_width(tile, 0, LV_PART_MAIN);
+        lv_obj_set_style_shadow_width(tile, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(tile, 5, LV_PART_MAIN);
+        lv_obj_set_style_pad_row(tile, 4, LV_PART_MAIN);
+        if(bitmap_load(&shell->app_icons[app_index],
+                       shell->apps[app_index].icon_path, 54, 54) != 0)
+            icon = make_image(tile, &shell->app_icons[app_index], 54, 54);
+        else icon = make_fallback_icon(view, tile,
+                                       shell->apps[app_index].name, 54);
+        (void)icon;
+        name = lv_label_create(tile);
+        lv_obj_set_width(name, 68);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        lv_label_set_text(name, shell->apps[app_index].name);
+        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_set_style_text_color(name, lv_color_hex(0x253047), LV_PART_MAIN);
+        lv_obj_set_style_text_font(name, msys_ui_theme_font(view->theme, 12),
+                                   LV_PART_MAIN);
+        if(binding != NULL)
+            lv_obj_add_event_cb(tile, launcher_folder_member_event_cb,
+                                LV_EVENT_ALL, binding);
+    }
+    if(shell->preferences.animations_enabled != 0 &&
+       shell->preferences.reduce_motion == 0)
+        msys_ui_animate_opening(panel, shell->policy);
+}
+
 static void render_launcher(shell_state *shell)
 {
     shell_view *view = &shell->views[SURFACE_LAUNCHER];
@@ -1899,7 +2116,7 @@ static void render_launcher(shell_state *shell)
     int icon_size;
     int tile_width;
     int tile_height;
-    char page_text[24];
+    char page_text[96];
     shell->binding_count = 0u;
     if(grid == NULL) return;
     launcher_resolve_grid_geometry(view, root, grid);
@@ -1926,6 +2143,12 @@ static void render_launcher(shell_state *shell)
            sizeof(shell->launcher_acrylic_panels));
     shell->launcher_acrylic_panel_count = 0u;
     shell->launcher_drop_preview = NULL;
+    if(shell->launcher_folder_overlay != NULL &&
+       lv_obj_is_valid(shell->launcher_folder_overlay))
+        lv_obj_delete(shell->launcher_folder_overlay);
+    shell->launcher_folder_overlay = NULL;
+    shell->launcher_folder_panel = NULL;
+    shell->launcher_folder_grid = NULL;
     launcher_set_translate_x(grid, 0);
     lv_obj_clean(grid);
     if(root != NULL) {
@@ -1953,58 +2176,6 @@ static void render_launcher(shell_state *shell)
     if(tile_width < 60) tile_width = 60;
     if(icon_size > tile_width - 10) icon_size = tile_width - 10;
     tile_height = icon_size + (shell->preferences.show_labels != 0 ? 32 : 12);
-    if(shell->launcher_folder >= 0 &&
-       (size_t)shell->launcher_folder < shell->launcher_layout.count &&
-       shell->launcher_layout.items[shell->launcher_folder].kind ==
-           MSYS_NATIVE_LAUNCHER_FOLDER) {
-        const msys_native_launcher_item *folder =
-            &shell->launcher_layout.items[shell->launcher_folder];
-        set_label_if_changed(view, "launcher_title", folder->name);
-        for(slot = 0u; slot < folder->member_count; slot++) {
-            size_t app_index;
-            ui_binding *binding;
-            lv_obj_t *tile;
-            lv_obj_t *content;
-            lv_obj_t *icon;
-            lv_obj_t *name;
-            if(!launcher_app_index(shell, folder->members[slot], &app_index)) continue;
-            binding = new_binding(shell, BIND_FOLDER_MEMBER,
-                                  (size_t)shell->launcher_folder);
-            if(binding != NULL) binding->secondary = slot;
-            tile = launcher_tile_create(shell, grid, tile_width, tile_height,
-                                        &content);
-            if(bitmap_load(&shell->app_icons[app_index],
-                           shell->apps[app_index].icon_path,
-                           icon_size, icon_size) != 0)
-                icon = make_image(content, &shell->app_icons[app_index],
-                                  icon_size, icon_size);
-            else
-                icon = make_fallback_icon(view, content,
-                                          shell->apps[app_index].name, icon_size);
-            (void)icon;
-            if(shell->preferences.show_labels != 0) {
-                name = lv_label_create(content);
-                lv_obj_set_width(name, tile_width - 8);
-                lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-                lv_label_set_text(name, shell->apps[app_index].name);
-                lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-                lv_obj_set_style_text_color(name, lv_color_hex(0x253047),
-                                             LV_PART_MAIN);
-                lv_obj_set_style_text_font(
-                    name, msys_ui_theme_font(view->theme, 14), LV_PART_MAIN);
-            }
-            if(binding != NULL)
-                lv_obj_add_event_cb(tile, launcher_folder_member_event_cb,
-                                    LV_EVENT_ALL, binding);
-        }
-        (void)snprintf(page_text, sizeof(page_text), "%zu", folder->member_count);
-        set_label_if_changed(view, "page_label", page_text);
-        set_label_if_changed(view, "launcher_status",
-            localized(shell, "点击左箭头关闭文件夹", "Use the left arrow to close"));
-        launcher_acrylic_sync(shell, root);
-        launcher_report_geometry(shell, root, grid, folder->member_count);
-        return;
-    }
     set_label_if_changed(view, "launcher_title", localized(shell, "应用", "Apps"));
     for(slot = 0u; slot < count; slot++) {
         size_t item_index = indices[slot];
@@ -2030,6 +2201,8 @@ static void render_launcher(shell_state *shell)
                         shell->apps[app_index].icon_path, icon_size, icon_size) != 0)
             icon = make_image(content, &shell->app_icons[app_index], icon_size,
                               icon_size);
+        else if(item->kind == MSYS_NATIVE_LAUNCHER_FOLDER)
+            icon = make_folder_icon(shell, view, content, item, icon_size);
         else
             icon = make_fallback_icon(view, content,
                 item->kind == MSYS_NATIVE_LAUNCHER_FOLDER ? item->name :
@@ -2052,16 +2225,28 @@ static void render_launcher(shell_state *shell)
         if(binding != NULL)
             lv_obj_add_event_cb(tile, launcher_item_event_cb, LV_EVENT_ALL, binding);
     }
-    (void)snprintf(page_text, sizeof(page_text), "%u / %u",
-                   shell->launcher_page + 1u, pages);
+    page_text[0] = '\0';
+    for(slot = 0u; slot < pages && slot < 10u; slot++) {
+        const char *dot = slot == shell->launcher_page ? "●" : "○";
+        size_t used = strlen(page_text);
+        (void)snprintf(page_text + used, sizeof(page_text) - used,
+                       "%s%s", used != 0u ? "  " : "", dot);
+    }
     set_label_if_changed(view, "page_label", page_text);
     set_label_if_changed(view, "launcher_status",
         shell->app_count == 0u
             ? localized(shell, "没有可启动的应用", "No launchable apps")
-            : (shell->launcher_editing != 0
-                ? localized(shell, "编辑模式：拖动排序或归入文件夹",
-                            "Edit mode: drag to reorder or group") : ""));
+            : page_text);
+    {
+        lv_obj_t *done = view_object(view, "launcher_edit_done");
+        if(done != NULL)
+            lv_obj_set_flag(done, LV_OBJ_FLAG_HIDDEN,
+                            shell->launcher_editing == 0);
+    }
     launcher_acrylic_sync(shell, root);
+    if(shell->launcher_folder >= 0)
+        render_launcher_folder_overlay(shell, view, root,
+                                       (size_t)shell->launcher_folder);
     launcher_report_geometry(shell, root, grid, count);
 }
 
@@ -2075,6 +2260,146 @@ static void render_metrics(shell_state *shell)
         set_label(&shell->views[SURFACE_OVERVIEW], "metrics", text);
 }
 
+static void process_system_event_cb(lv_event_t *event)
+{
+    shell_state *shell = lv_event_get_user_data(event);
+    if(shell == NULL || lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    shell->process_include_system = shell->process_include_system == 0;
+    request_processes(shell);
+}
+
+static const char *process_state_text(shell_state *shell, const char *state)
+{
+    if(state == NULL || state[0] == '\0') return "-";
+    if(strcmp(state, "ready") == 0) return localized(shell, "就绪", "Ready");
+    if(strcmp(state, "starting") == 0) return localized(shell, "启动中", "Starting");
+    if(strcmp(state, "stopping") == 0) return localized(shell, "停止中", "Stopping");
+    if(strcmp(state, "running") == 0) return localized(shell, "运行中", "Running");
+    if(strcmp(state, "sleeping") == 0) return localized(shell, "休眠", "Sleeping");
+    if(strcmp(state, "failed") == 0) return localized(shell, "异常", "Failed");
+    return state;
+}
+
+static void render_processes(shell_state *shell, shell_view *view,
+                             lv_obj_t *list)
+{
+    lv_obj_t *filter;
+    lv_obj_t *mark;
+    lv_obj_t *filter_text;
+    size_t index;
+    char status[96];
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_style_pad_row(list, 7, LV_PART_MAIN);
+
+    filter = lv_button_create(list);
+    lv_obj_set_size(filter, LV_PCT(100), 44);
+    lv_obj_set_style_radius(filter, 15, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(filter, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(filter, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(filter, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(filter, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(filter, lv_color_hex(0xd7deea), LV_PART_MAIN);
+    mark = lv_obj_create(filter);
+    lv_obj_remove_flag(mark, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(mark, 22, 22);
+    lv_obj_align(mark, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_radius(mark, 7, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(mark, lv_color_hex(
+        shell->process_include_system != 0 ? 0x3f66e8 : 0xffffff), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(mark, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(mark, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(mark, lv_color_hex(
+        shell->process_include_system != 0 ? 0x3f66e8 : 0xaeb8c8), LV_PART_MAIN);
+    if(shell->process_include_system != 0) {
+        lv_obj_t *tick = lv_label_create(mark);
+        lv_label_set_text(tick, "✓");
+        lv_obj_set_style_text_font(tick, msys_ui_theme_font(view->theme, 14),
+                                   LV_PART_MAIN);
+        lv_obj_set_style_text_color(tick, lv_color_hex(0xffffff), LV_PART_MAIN);
+        lv_obj_center(tick);
+    }
+    filter_text = lv_label_create(filter);
+    lv_obj_set_width(filter_text, 226);
+    lv_label_set_long_mode(filter_text, LV_LABEL_LONG_DOT);
+    lv_label_set_text(filter_text, localized(shell,
+        "同时显示非 MSYS 系统进程", "Also show non-MSYS system processes"));
+    lv_obj_set_style_text_font(filter_text, msys_ui_theme_font(view->theme, 14),
+                               LV_PART_MAIN);
+    lv_obj_set_style_text_color(filter_text, lv_color_hex(0x253047), LV_PART_MAIN);
+    lv_obj_align(filter_text, LV_ALIGN_LEFT_MID, 31, 0);
+    lv_obj_add_event_cb(filter, process_system_event_cb, LV_EVENT_CLICKED, shell);
+    lv_obj_add_event_cb(filter, feedback_event_cb, LV_EVENT_ALL, shell);
+
+    if(shell->process_state == 1) {
+        set_label_if_changed(view, "overview_status",
+            localized(shell, "正在读取后台进程…", "Loading background processes…"));
+        return;
+    }
+    if(shell->process_state == 3) {
+        set_label_if_changed(view, "overview_status",
+            localized(shell, "后台进程暂不可用", "Background processes unavailable"));
+        return;
+    }
+    if(shell->process_count == 0u) {
+        set_label_if_changed(view, "overview_status",
+            localized(shell, "没有正在运行的后台进程", "No running background processes"));
+        return;
+    }
+    set_label_if_changed(view, "overview_status", "");
+    for(index = 0u; index < shell->process_count; index++) {
+        const msys_native_process *process = &shell->processes[index];
+        lv_obj_t *card = lv_obj_create(list);
+        lv_obj_t *name = lv_label_create(card);
+        lv_obj_t *detail = lv_label_create(card);
+        lv_obj_t *memory = lv_label_create(card);
+        const char *state = process->component_state[0] != '\0'
+            ? process->component_state : process->state;
+        lv_obj_set_width(card, LV_PCT(100));
+        lv_obj_set_height(card, 68);
+        lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(card, 17, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0xffffff), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(card, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(card, lv_color_hex(0xd7deea), LV_PART_MAIN);
+        lv_obj_set_style_pad_all(card, 9, LV_PART_MAIN);
+        lv_obj_set_width(name, 202);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        lv_label_set_text(name, process->name[0] != '\0' ? process->name :
+                          (process->component[0] != '\0' ? process->component : "-"));
+        lv_obj_set_style_text_font(name, msys_ui_theme_font(view->theme, 14),
+                                   LV_PART_MAIN);
+        lv_obj_set_style_text_color(name, lv_color_hex(0x182033), LV_PART_MAIN);
+        lv_obj_align(name, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_add_flag(name, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(name, marquee_event_cb, LV_EVENT_CLICKED, shell);
+        (void)snprintf(status, sizeof(status), "PID %llu · %s · %s",
+                       (unsigned long long)process->pid,
+                       process->runtime[0] != '\0' ? process->runtime : "-",
+                       process_state_text(shell, state));
+        lv_obj_set_width(detail, 240);
+        lv_label_set_long_mode(detail, LV_LABEL_LONG_DOT);
+        lv_label_set_text(detail, status);
+        lv_obj_set_style_text_font(detail, msys_ui_theme_font(view->theme, 12),
+                                   LV_PART_MAIN);
+        lv_obj_set_style_text_color(detail, lv_color_hex(0x69758a), LV_PART_MAIN);
+        lv_obj_align(detail, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_add_flag(detail, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(detail, marquee_event_cb, LV_EVENT_CLICKED, shell);
+        if(process->rss_available != 0)
+            (void)snprintf(status, sizeof(status), "%.1f MB",
+                           (double)process->rss_kib / 1024.0);
+        else (void)snprintf(status, sizeof(status), "--");
+        lv_label_set_text(memory, status);
+        lv_obj_set_style_text_font(memory, msys_ui_theme_font(view->theme, 12),
+                                   LV_PART_MAIN);
+        lv_obj_set_style_text_color(memory, lv_color_hex(
+            process->msys_owned != 0 ? 0x3159c9 : 0x69758a), LV_PART_MAIN);
+        lv_obj_align(memory, LV_ALIGN_TOP_RIGHT, 0, 0);
+    }
+}
+
 static void render_overview(shell_state *shell)
 {
     shell_view *view = &shell->views[SURFACE_OVERVIEW];
@@ -2084,6 +2409,21 @@ static void render_overview(shell_state *shell)
     if(grid == NULL) return;
     lv_obj_clean(grid);
     shell->binding_count = LAUNCHER_BINDING_CAPACITY;
+    set_label_if_changed(view, "overview_title",
+        shell->process_view != 0
+            ? localized(shell, "后台进程", "Background processes")
+            : localized(shell, "最近任务", "Recent tasks"));
+    set_label_if_changed(view, "overview_mode_label",
+        shell->process_view != 0
+            ? localized(shell, "最近任务", "Recents")
+            : localized(shell, "后台进程", "Background"));
+    if(shell->process_view != 0) {
+        render_processes(shell, view, grid);
+        render_metrics(shell);
+        return;
+    }
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_scroll_dir(grid, LV_DIR_VER);
     for(index = 0u; index < shell->task_count; index++) {
         ui_binding *focus = new_binding(shell, BIND_FOCUS_TASK, index);
         ui_binding *close = new_binding(shell, BIND_CLOSE_TASK, index);
@@ -2254,6 +2594,7 @@ static void render_notifications(shell_state *shell)
                          shell->notifications.count == 0u
                              ? localized(shell, "暂无消息", "No notifications")
                              : "");
+    notification_indicator_update(shell);
 }
 
 static void wifi_update_labels(shell_state *shell)
@@ -2283,6 +2624,7 @@ static void wifi_update_labels(shell_state *shell)
     set_label_if_changed(&shell->views[SURFACE_CHROME], "wifi", chrome);
     set_label_if_changed(&shell->views[SURFACE_CONTROLS],
                          "control_wifi_status", status);
+    wifi_icon_update(shell);
 }
 
 static void request_apps(shell_state *shell)
@@ -2351,6 +2693,53 @@ static void request_wifi_inventory(shell_state *shell)
     }
 }
 
+static int preferred_status_height(const shell_state *shell)
+{
+    return strcmp(shell->preferences.status_visibility, "auto-hide") == 0
+        ? SYSTEM_EDGE_HEIGHT : BAR_HEIGHT;
+}
+
+static int preferred_navigation_height(const shell_state *shell)
+{
+    if(strcmp(shell->preferences.navigation_visibility, "auto-hide") == 0)
+        return SYSTEM_EDGE_HEIGHT;
+    return shell->buttons_mode != 0 ? BAR_HEIGHT : NAVIGATION_PILL_HEIGHT;
+}
+
+static void apply_layout_insets(shell_state *shell)
+{
+    char payload[192];
+    const char *profile = shell->layout_profile[0] != '\0'
+        ? shell->layout_profile : "mobile";
+    const char *orientation = shell->layout_orientation_policy[0] != '\0'
+        ? shell->layout_orientation_policy : "auto";
+    int top = preferred_status_height(shell);
+    int navigation = preferred_navigation_height(shell);
+    int right = strcmp(shell->layout_orientation, "landscape") == 0
+        ? navigation : 0;
+    int bottom = right != 0 ? 0 : navigation;
+    if(strcmp(shell->preferences.layout, "mobile") == 0 ||
+       strcmp(shell->preferences.layout, "desktop") == 0 ||
+       strcmp(shell->preferences.layout, "kiosk") == 0)
+        profile = shell->preferences.layout;
+    shell->chrome_height = top;
+    shell->navigation_height = navigation;
+    (void)snprintf(payload, sizeof(payload),
+        "{\"profile\":\"%s\",\"orientation\":\"%s\","
+        "\"insets\":\"%d,%d,%d,0\"}",
+        profile, orientation, top, right, bottom);
+    (void)send_call(shell, PENDING_LAYOUT_SET, 0u, "role:window-manager",
+                    "set_layout", payload, 1);
+}
+
+static void request_layout(shell_state *shell)
+{
+    if(shell->supervised == 0 ||
+       pending_kind_active(shell, PENDING_LAYOUT_GET) != 0) return;
+    (void)send_call(shell, PENDING_LAYOUT_GET, 0u, "role:window-manager",
+                    "get_layout", "{}", 1);
+}
+
 static void request_tasks(shell_state *shell)
 {
     if(send_call(shell, PENDING_TASKS, 0u, "role:window-manager", "list_windows",
@@ -2361,12 +2750,36 @@ static void request_tasks(shell_state *shell)
     }
 }
 
+static void request_processes(shell_state *shell)
+{
+    char payload[96];
+    if(shell->supervised == 0) {
+        shell->process_state = 3;
+        if(shell->overview_visible != 0) render_overview(shell);
+        return;
+    }
+    shell->process_state = 1;
+    shell->process_count = 0u;
+    memset(&shell->process_metadata, 0, sizeof(shell->process_metadata));
+    (void)snprintf(payload, sizeof(payload),
+        "{\"scope\":\"all-msys\",\"include_system\":%s,\"limit\":64}",
+        shell->process_include_system != 0 ? "true" : "false");
+    if(shell->overview_visible != 0) render_overview(shell);
+    if(send_call(shell, PENDING_PROCESS_LIST,
+                 (size_t)(shell->process_include_system != 0),
+                 "msys.core", "list_processes", payload, 1) == 0u) {
+        shell->process_state = 3;
+        if(shell->overview_visible != 0) render_overview(shell);
+    }
+}
+
 static void show_overview(shell_state *shell)
 {
     if(shell->overview_visible != 0) return;
     hide_notification_center(shell);
     hide_controls(shell);
     hide_toast(shell);
+    shell->process_view = 0;
     shell->overview_pending = 1;
     set_label(&shell->views[SURFACE_OVERVIEW], "overview_status",
               localized(shell, "正在读取最近任务…", "Loading recent tasks…"));
@@ -2456,6 +2869,16 @@ static void start_settings_panel(shell_state *shell, const char *panel)
 static void send_navigation(shell_state *shell, const char *action)
 {
     char payload[96];
+    if(strcmp(action, "back") == 0 && shell->launcher_folder >= 0) {
+        shell->launcher_folder = -1;
+        shell->launcher_editing = 0;
+        render_launcher(shell);
+        return;
+    }
+    if(strcmp(action, "back") == 0 && shell->launcher_editing != 0) {
+        launcher_finish_edit(shell);
+        return;
+    }
     if(strcmp(action, "apps") == 0) {
         if(shell->overview_visible != 0 || shell->overview_pending != 0)
             hide_overview(shell);
@@ -2465,6 +2888,11 @@ static void send_navigation(shell_state *shell, const char *action)
     }
     if(strcmp(action, "back") == 0 &&
        (shell->overview_visible != 0 || shell->overview_pending != 0)) {
+        if(shell->overview_visible != 0 && shell->process_view != 0) {
+            shell->process_view = 0;
+            render_overview(shell);
+            return;
+        }
         hide_overview(shell);
         return;
     }
@@ -2477,6 +2905,10 @@ static void send_navigation(shell_state *shell, const char *action)
         return;
     }
     if(strcmp(action, "home") == 0) {
+        if(shell->launcher_folder >= 0 || shell->launcher_editing != 0) {
+            shell->launcher_folder = -1;
+            launcher_finish_edit(shell);
+        }
         hide_overview(shell);
         hide_notification_center(shell);
         hide_controls(shell);
@@ -2496,6 +2928,11 @@ static void xml_action_cb(lv_event_t *event)
         send_navigation(active_shell, action);
     else if(strcmp(action, "close-overview") == 0)
         hide_overview(active_shell);
+    else if(strcmp(action, "overview-mode") == 0) {
+        active_shell->process_view = active_shell->process_view == 0;
+        if(active_shell->process_view != 0) request_processes(active_shell);
+        else render_overview(active_shell);
+    }
     else if(strcmp(action, "notifications") == 0)
         show_notification_center(active_shell);
     else if(strcmp(action, "controls") == 0)
@@ -2518,6 +2955,8 @@ static void xml_action_cb(lv_event_t *event)
         launcher_select_page(active_shell, -1);
     else if(strcmp(action, "launcher-next") == 0)
         launcher_select_page(active_shell, 1);
+    else if(strcmp(action, "launcher-edit-done") == 0)
+        launcher_finish_edit(active_shell);
 }
 
 static int bind_document(lv_xml_component_scope_t *scope, void *user_data)
@@ -2545,6 +2984,75 @@ static void add_feedback(shell_state *shell, enum shell_surface_id surface,
         lv_obj_add_event_cb(object, feedback_event_cb, LV_EVENT_ALL, shell);
 }
 
+static lv_obj_t *chrome_icon_part(lv_obj_t *parent, int x, int y,
+                                  int width, int height, int radius,
+                                  uint32_t color)
+{
+    lv_obj_t *part = lv_obj_create(parent);
+    lv_obj_remove_flag(part, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(part, x, y);
+    lv_obj_set_size(part, width, height);
+    lv_obj_set_style_radius(part, (int16_t)radius, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(part, lv_color_hex(color), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(part, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(part, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(part, 0, LV_PART_MAIN);
+    return part;
+}
+
+static void notification_indicator_update(shell_state *shell)
+{
+    if(shell->notification_badge == NULL ||
+       !lv_obj_is_valid(shell->notification_badge)) return;
+    lv_obj_set_flag(shell->notification_badge, LV_OBJ_FLAG_HIDDEN,
+                    shell->notifications.count == 0u);
+}
+
+static void wifi_icon_update(shell_state *shell)
+{
+    int active = shell->wifi_connected != 0 ? shell->wifi_signal_level + 1 : 0;
+    size_t index;
+    if(active > 4) active = 4;
+    if(active < 0) active = 0;
+    for(index = 0u; index < 4u; index++) {
+        uint32_t color = (int)index < active ? 0x3159c9 : 0xb7c0ce;
+        if(shell->wifi_bars[index] != NULL &&
+           lv_obj_is_valid(shell->wifi_bars[index]))
+            lv_obj_set_style_bg_color(shell->wifi_bars[index],
+                                      lv_color_hex(color), LV_PART_MAIN);
+    }
+}
+
+static void configure_chrome_icons(shell_state *shell)
+{
+    lv_obj_t *notification = view_object(&shell->views[SURFACE_CHROME],
+                                         "notification_icon_host");
+    lv_obj_t *wifi = view_object(&shell->views[SURFACE_CHROME],
+                                 "wifi_icon_host");
+    size_t index;
+    memset(shell->wifi_bars, 0, sizeof(shell->wifi_bars));
+    shell->notification_badge = NULL;
+    if(notification != NULL) {
+        lv_obj_clean(notification);
+        (void)chrome_icon_part(notification, 11, 3, 6, 4, 3, 0x253047);
+        (void)chrome_icon_part(notification, 6, 6, 16, 14, 8, 0x253047);
+        (void)chrome_icon_part(notification, 4, 17, 20, 4, 2, 0x253047);
+        (void)chrome_icon_part(notification, 11, 22, 6, 3, 2, 0x253047);
+        shell->notification_badge = chrome_icon_part(
+            notification, 20, 1, 7, 7, 4, 0xe74b5b);
+        notification_indicator_update(shell);
+    }
+    if(wifi != NULL) {
+        static const int heights[4] = {4, 7, 11, 15};
+        lv_obj_clean(wifi);
+        for(index = 0u; index < 4u; index++)
+            shell->wifi_bars[index] = chrome_icon_part(
+                wifi, 3 + (int)index * 6, 22 - heights[index],
+                4, heights[index], 2, 0xb7c0ce);
+        wifi_icon_update(shell);
+    }
+}
+
 static void configure_interactions(shell_state *shell)
 {
     static const struct {
@@ -2556,7 +3064,9 @@ static void configure_interactions(shell_state *shell)
         {SURFACE_NAVIGATION, "back_button"},
         {SURFACE_NAVIGATION, "home_button"},
         {SURFACE_NAVIGATION, "apps_button"},
+        {SURFACE_LAUNCHER, "launcher_edit_done"},
         {SURFACE_OVERVIEW, "overview_close"},
+        {SURFACE_OVERVIEW, "overview_mode"},
         {SURFACE_NOTIFICATION, "notification_clear"},
         {SURFACE_NOTIFICATION, "notification_close"},
         {SURFACE_CONTROLS, "controls_close"},
@@ -2611,7 +3121,8 @@ static void configure_interactions(shell_state *shell)
         lv_obj_set_style_bg_color(pill, lv_color_hex(0x273247), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_border_width(pill, 0, LV_PART_MAIN);
-        lv_obj_center(pill);
+        lv_obj_align(pill, LV_ALIGN_TOP_MID, 0,
+            preferred_navigation_height(shell) == SYSTEM_EDGE_HEIGHT ? 0 : 8);
         lv_obj_set_flag(pill, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode != 0);
         lv_obj_update_layout(navigation_root);
     }
@@ -2622,6 +3133,7 @@ static void configure_interactions(shell_state *shell)
     if(pill_area != NULL)
         lv_obj_add_event_cb(pill_area, pill_event_cb, LV_EVENT_ALL, shell);
     if(pill_area != NULL) lv_obj_add_flag(pill_area, LV_OBJ_FLAG_CLICKABLE);
+    configure_chrome_icons(shell);
 }
 
 static void localize_documents(shell_state *shell)
@@ -2630,6 +3142,8 @@ static void localize_documents(shell_state *shell)
               localized(shell, "应用", "Apps"));
     set_label(&shell->views[SURFACE_LAUNCHER], "launcher_hint",
               localized(shell, "轻触启动，长按查看详情", "Tap to open"));
+    set_label(&shell->views[SURFACE_LAUNCHER], "launcher_edit_done_label",
+              localized(shell, "完成", "Done"));
     set_label(&shell->views[SURFACE_OVERVIEW], "overview_title",
               localized(shell, "最近任务", "Recent tasks"));
     set_label(&shell->views[SURFACE_NOTIFICATION], "notification_title",
@@ -2802,6 +3316,7 @@ static int initialize_ui(shell_state *shell, const char *display_name,
     }
     configure_interactions(shell);
     localize_documents(shell);
+    apply_launcher_preferences(shell);
     render_launcher(shell);
     render_notifications(shell);
     wifi_update_labels(shell);
@@ -2849,6 +3364,7 @@ static int initialize_ipc(shell_state *shell)
         "{\"role\":\"lvgl-shell\",\"roles\":[\"launcher\",\"system-chrome\",\"navigation-bar\",\"task-switcher\",\"notification-presenter\",\"notification-center\",\"transition-presenter\"]}");
     request_apps(shell);
     request_wifi_inventory(shell);
+    request_layout(shell);
     return 1;
 }
 
@@ -2910,6 +3426,13 @@ static void handle_reply(shell_state *shell, const char *packet,
             show_toast(shell, localized(shell, "无法读取最近任务",
                                        "Unable to load recent tasks"));
         }
+        else if(call.kind == PENDING_PROCESS_LIST &&
+                call.index == (size_t)(shell->process_include_system != 0)) {
+            shell->process_state = 3;
+            shell->process_count = 0u;
+            if(shell->overview_visible != 0 && shell->process_view != 0)
+                render_overview(shell);
+        }
         else if(call.kind == PENDING_APPS)
             set_label(&shell->views[SURFACE_LAUNCHER], "launcher_status",
                       localized(shell, "无法读取应用列表", "Unable to load apps"));
@@ -2969,6 +3492,20 @@ static void handle_reply(shell_state *shell, const char *packet,
                                                 shell->task_count);
         if(shell->overview_visible != 0) render_overview(shell);
     }
+    else if(call.kind == PENDING_PROCESS_LIST) {
+        if(call.index == (size_t)(shell->process_include_system != 0)) {
+            if(msys_native_parse_processes(payload, shell->processes,
+                   MSYS_NATIVE_MAX_PROCESSES, &shell->process_count,
+                   &shell->process_metadata) != 0)
+                shell->process_state = 2;
+            else {
+                shell->process_state = 3;
+                shell->process_count = 0u;
+            }
+            if(shell->overview_visible != 0 && shell->process_view != 0)
+                render_overview(shell);
+        }
+    }
     else if(call.kind == PENDING_CLOSE) {
         if(shell->overview_visible != 0) request_tasks(shell);
     }
@@ -3007,6 +3544,28 @@ static void handle_reply(shell_state *shell, const char *packet,
             shell->wifi_signal_level = 0;
         }
         wifi_update_labels(shell);
+    }
+    else if(call.kind == PENDING_LAYOUT_GET) {
+        char profile[16];
+        char orientation_policy[16];
+        char orientation[16];
+        if(msys_mipc_json_get_string(payload, "profile", profile,
+               sizeof(profile), NULL) == MSYS_MIPC_OK &&
+           msys_mipc_json_get_string(payload, "orientation_policy",
+               orientation_policy, sizeof(orientation_policy), NULL) ==
+               MSYS_MIPC_OK &&
+           msys_mipc_json_get_string(payload, "orientation", orientation,
+               sizeof(orientation), NULL) == MSYS_MIPC_OK) {
+            (void)snprintf(shell->layout_profile,
+                           sizeof(shell->layout_profile), "%s", profile);
+            (void)snprintf(shell->layout_orientation_policy,
+                           sizeof(shell->layout_orientation_policy), "%s",
+                           orientation_policy);
+            (void)snprintf(shell->layout_orientation,
+                           sizeof(shell->layout_orientation), "%s",
+                           orientation);
+            apply_layout_insets(shell);
+        }
     }
     free(payload);
 }
@@ -3064,17 +3623,87 @@ static void apply_launcher_preferences(shell_state *shell)
     lv_obj_t *buttons;
     lv_obj_t *pill_area;
     lv_obj_t *pill;
+    lv_obj_t *navigation_root;
+    lv_obj_t *chrome_root;
+    lv_obj_t *clock;
+    lv_obj_t *notification_button;
+    lv_obj_t *controls_button;
+    lv_obj_t *notification_icon;
+    lv_obj_t *wifi_icon;
+    int navigation_height;
+    int status_auto;
+    int immersive_edge;
     shell->legacy_navigation_override = 0;
     shell->buttons_mode = strcmp(shell->preferences.navigation_mode, "buttons") == 0;
     buttons = view_object(&shell->views[SURFACE_NAVIGATION], "button_navigation");
     pill_area = view_object(&shell->views[SURFACE_NAVIGATION], "pill_navigation");
     pill = view_object(&shell->views[SURFACE_NAVIGATION], "navigation_pill");
+    navigation_root = view_object(&shell->views[SURFACE_NAVIGATION],
+                                  "navigation_root");
+    chrome_root = view_object(&shell->views[SURFACE_CHROME], "chrome_root");
+    clock = view_object(&shell->views[SURFACE_CHROME], "clock");
+    notification_button = view_object(&shell->views[SURFACE_CHROME],
+                                      "notifications");
+    controls_button = view_object(&shell->views[SURFACE_CHROME], "controls");
+    notification_icon = view_object(&shell->views[SURFACE_CHROME],
+                                    "notification_icon_host");
+    wifi_icon = view_object(&shell->views[SURFACE_CHROME], "wifi_icon_host");
+    navigation_height = preferred_navigation_height(shell);
+    status_auto = strcmp(shell->preferences.status_visibility, "auto-hide") == 0;
+    immersive_edge = navigation_height == SYSTEM_EDGE_HEIGHT;
     if(buttons != NULL)
-        lv_obj_set_flag(buttons, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode == 0);
+        lv_obj_set_flag(buttons, LV_OBJ_FLAG_HIDDEN,
+                        shell->buttons_mode == 0 || immersive_edge != 0);
     if(pill_area != NULL)
-        lv_obj_set_flag(pill_area, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode != 0);
+        lv_obj_set_flag(pill_area, LV_OBJ_FLAG_HIDDEN,
+                        shell->buttons_mode != 0 && immersive_edge == 0);
     if(pill != NULL)
-        lv_obj_set_flag(pill, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode != 0);
+        lv_obj_set_flag(pill, LV_OBJ_FLAG_HIDDEN,
+                        shell->buttons_mode != 0 && immersive_edge == 0);
+    if(pill != NULL) {
+        lv_obj_set_style_bg_opa(pill,
+            navigation_height == SYSTEM_EDGE_HEIGHT ? (lv_opa_t)112
+                                                     : LV_OPA_COVER,
+            LV_PART_MAIN);
+        lv_obj_align(pill, LV_ALIGN_TOP_MID, 0,
+            navigation_height == SYSTEM_EDGE_HEIGHT ? 0 : 8);
+    }
+    if(navigation_root != NULL)
+        lv_obj_set_style_bg_opa(navigation_root,
+            navigation_height == SYSTEM_EDGE_HEIGHT ? LV_OPA_TRANSP
+                                                     : LV_OPA_COVER,
+            LV_PART_MAIN);
+    if(navigation_root != NULL) {
+        lv_obj_set_style_pad_top(navigation_root,
+                                 immersive_edge != 0 ? 0 : 3, LV_PART_MAIN);
+        lv_obj_set_style_pad_bottom(navigation_root,
+                                    immersive_edge != 0 ? 0 : 3, LV_PART_MAIN);
+    }
+    if(pill_area != NULL)
+        lv_obj_set_height(pill_area,
+                          immersive_edge != 0 ? SYSTEM_EDGE_HEIGHT : 36);
+    if(chrome_root != NULL)
+        lv_obj_set_style_bg_opa(chrome_root,
+            status_auto != 0 ? LV_OPA_TRANSP : (lv_opa_t)240,
+            LV_PART_MAIN);
+    if(clock != NULL) lv_obj_set_flag(clock, LV_OBJ_FLAG_HIDDEN, status_auto != 0);
+    if(chrome_root != NULL) {
+        lv_obj_set_style_pad_top(chrome_root, status_auto != 0 ? 0 : 3,
+                                 LV_PART_MAIN);
+        lv_obj_set_style_pad_bottom(chrome_root, status_auto != 0 ? 0 : 3,
+                                    LV_PART_MAIN);
+    }
+    if(notification_button != NULL)
+        lv_obj_set_height(notification_button,
+                          status_auto != 0 ? SYSTEM_EDGE_HEIGHT : 36);
+    if(controls_button != NULL)
+        lv_obj_set_height(controls_button,
+                          status_auto != 0 ? SYSTEM_EDGE_HEIGHT : 36);
+    if(notification_icon != NULL)
+        lv_obj_set_flag(notification_icon, LV_OBJ_FLAG_HIDDEN, status_auto != 0);
+    if(wifi_icon != NULL)
+        lv_obj_set_flag(wifi_icon, LV_OBJ_FLAG_HIDDEN, status_auto != 0);
+    request_layout(shell);
     render_launcher(shell);
 }
 
@@ -3164,8 +3793,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.24\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.24\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.25\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.25\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -3215,6 +3844,7 @@ static void handle_event(shell_state *shell, const char *packet)
                                         sizeof(source), NULL);
         if(msys_native_notification_append(&shell->notifications, topic, payload,
                                            source, realtime_ms()) != 0) {
+            notification_indicator_update(shell);
             if(shell->notification_visible != 0) render_notifications(shell);
             newest = msys_native_notification_newest(&shell->notifications, 0u);
             if(strcmp(topic, "msys.role.notification-presenter") == 0 &&
@@ -3385,6 +4015,15 @@ int main(int argc, char **argv)
     shell.launcher_drag_target = -1;
     shell.launcher_drag_folder = -1;
     shell.launcher_drag_member = -1;
+    (void)snprintf(shell.layout_profile, sizeof(shell.layout_profile), "%s",
+                   getenv("MSYS_LAYOUT_PROFILE") != NULL
+                       ? getenv("MSYS_LAYOUT_PROFILE") : "mobile");
+    (void)snprintf(shell.layout_orientation_policy,
+                   sizeof(shell.layout_orientation_policy), "%s",
+                   getenv("MSYS_ORIENTATION") != NULL
+                       ? getenv("MSYS_ORIENTATION") : "auto");
+    (void)snprintf(shell.layout_orientation,
+                   sizeof(shell.layout_orientation), "portrait");
     shell.chinese = locale_is_chinese();
     preference_result = msys_native_preferences_load(
         &shell.preferences, shell.preferences_path,
@@ -3417,7 +4056,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.24\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.25\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","

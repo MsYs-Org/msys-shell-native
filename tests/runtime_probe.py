@@ -87,6 +87,34 @@ def handle_background_wifi(channel: socket.socket, packet: dict) -> bool:
     return False
 
 
+def handle_background_layout(channel: socket.socket, packet: dict) -> bool:
+    if packet.get("type") != "call" or packet.get("target") != "role:window-manager":
+        return False
+    if packet.get("method") == "get_layout":
+        reply(channel, packet, {
+            "ok": True,
+            "profile": "mobile",
+            "orientation_policy": "auto",
+            "orientation": "portrait",
+            "geometry": {"width": 320, "height": 480},
+            "insets_policy": "42,0,42,0",
+            "insets": {"top": 42, "right": 0, "bottom": 42, "left": 0},
+            "workarea": {"x": 0, "y": 42, "width": 320, "height": 396},
+            "navigation_edge": "bottom",
+            "display_consistent": True,
+        })
+        return True
+    if packet.get("method") == "set_layout":
+        reply(channel, packet, {"ok": True})
+        return True
+    return False
+
+
+def handle_background_call(channel: socket.socket, packet: dict) -> bool:
+    return (handle_background_wifi(channel, packet) or
+            handle_background_layout(channel, packet))
+
+
 class XSetWindowAttributes(ctypes.Structure):
     _fields_ = [
         ("background_pixmap", ctypes.c_ulong),
@@ -297,7 +325,7 @@ def wait_for(channel: socket.socket, predicate: Callable[[dict], bool]) -> dict:
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         packet = receive(channel)
-        if handle_background_wifi(channel, packet):
+        if handle_background_call(channel, packet):
             continue
         if predicate(packet):
             return packet
@@ -319,7 +347,7 @@ def assert_no_outbound_call(
                 packet = receive(channel)
             except socket.timeout:
                 return
-            if handle_background_wifi(channel, packet):
+            if handle_background_call(channel, packet):
                 continue
             if outbound_call(target, method)(packet):
                 raise RuntimeError(

@@ -23,6 +23,8 @@ typedef struct msys_native_preferences {
     int show_labels;
     int acrylic;
     char navigation_mode[16];
+    char navigation_visibility[16];
+    char status_visibility[16];
     int icon_spacing;
     int folders_enabled;
     int large_folders_enabled;

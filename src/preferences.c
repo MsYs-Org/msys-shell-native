@@ -36,8 +36,10 @@ enum preference_field {
     FIELD_LARGE_FOLDERS_ENABLED = 1u << 13,
     FIELD_ANIMATIONS_ENABLED = 1u << 14,
     FIELD_REDUCE_MOTION = 1u << 15,
+    FIELD_NAVIGATION_VISIBILITY = 1u << 16,
+    FIELD_STATUS_VISIBILITY = 1u << 17,
     FIELD_REQUIRED_V1 = (1u << 6) - 1u,
-    FIELD_ALL = (1u << 16) - 1u
+    FIELD_ALL = (1u << 18) - 1u
 };
 
 static void skip_space(json_cursor *cursor)
@@ -195,6 +197,8 @@ static unsigned field_bit(const char *name)
     if (strcmp(name, "grid_rows") == 0) return FIELD_GRID_ROWS;
     if (strcmp(name, "acrylic") == 0) return FIELD_ACRYLIC;
     if (strcmp(name, "navigation_mode") == 0) return FIELD_NAVIGATION_MODE;
+    if (strcmp(name, "navigation_visibility") == 0) return FIELD_NAVIGATION_VISIBILITY;
+    if (strcmp(name, "status_visibility") == 0) return FIELD_STATUS_VISIBILITY;
     if (strcmp(name, "icon_spacing") == 0) return FIELD_ICON_SPACING;
     if (strcmp(name, "folders_enabled") == 0) return FIELD_FOLDERS_ENABLED;
     if (strcmp(name, "large_folders_enabled") == 0) return FIELD_LARGE_FOLDERS_ENABLED;
@@ -301,6 +305,16 @@ static enum msys_native_preferences_result parse_preferences_object(
                  strcmp(preferences->navigation_mode, "pill") != 0)) {
                 return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
             }
+        } else if (bit == FIELD_NAVIGATION_VISIBILITY ||
+                   bit == FIELD_STATUS_VISIBILITY) {
+            char *target = bit == FIELD_NAVIGATION_VISIBILITY
+                ? preferences->navigation_visibility
+                : preferences->status_visibility;
+            if (!json_string(cursor, target, 16u) ||
+                (strcmp(target, "always") != 0 &&
+                 strcmp(target, "auto-hide") != 0)) {
+                return MSYS_NATIVE_PREFERENCES_BAD_VALUE;
+            }
         } else if (bit == FIELD_ICON_SPACING) {
             uint64_t value;
             if (!json_u64(cursor, &value) || value > 48u) {
@@ -361,6 +375,10 @@ void msys_native_preferences_defaults(msys_native_preferences *preferences)
     preferences->acrylic = 0;
     (void)snprintf(preferences->navigation_mode,
                    sizeof(preferences->navigation_mode), "pill");
+    (void)snprintf(preferences->navigation_visibility,
+                   sizeof(preferences->navigation_visibility), "always");
+    (void)snprintf(preferences->status_visibility,
+                   sizeof(preferences->status_visibility), "always");
     preferences->icon_spacing = 8;
     preferences->folders_enabled = 1;
     preferences->large_folders_enabled = 1;
@@ -450,8 +468,8 @@ static int state_json(
         output,
         capacity,
         event != 0
-            ? "{\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"wallpaper_path\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"grid_columns\":%d,\"grid_rows\":%d,\"show_labels\":%s,\"acrylic\":%s,\"navigation_mode\":\"%s\",\"icon_spacing\":%d,\"folders_enabled\":%s,\"large_folders_enabled\":%s,\"animations_enabled\":%s,\"reduce_motion\":%s,\"sort\":\"%s\"}%s}"
-            : "{\"schema\":\"msys.shell-preferences.v1\",\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"wallpaper_path\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"grid_columns\":%d,\"grid_rows\":%d,\"show_labels\":%s,\"acrylic\":%s,\"navigation_mode\":\"%s\",\"icon_spacing\":%d,\"folders_enabled\":%s,\"large_folders_enabled\":%s,\"animations_enabled\":%s,\"reduce_motion\":%s,\"sort\":\"%s\"}%s}",
+            ? "{\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"wallpaper_path\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"grid_columns\":%d,\"grid_rows\":%d,\"show_labels\":%s,\"acrylic\":%s,\"navigation_mode\":\"%s\",\"navigation_visibility\":\"%s\",\"status_visibility\":\"%s\",\"icon_spacing\":%d,\"folders_enabled\":%s,\"large_folders_enabled\":%s,\"animations_enabled\":%s,\"reduce_motion\":%s,\"sort\":\"%s\"}%s}"
+            : "{\"schema\":\"msys.shell-preferences.v1\",\"revision\":%llu,\"preferences\":{\"layout\":\"%s\",\"wallpaper_color\":\"%s\",\"wallpaper_path\":\"%s\",\"accent_color\":\"%s\",\"icon_size\":%d,\"grid_columns\":%d,\"grid_rows\":%d,\"show_labels\":%s,\"acrylic\":%s,\"navigation_mode\":\"%s\",\"navigation_visibility\":\"%s\",\"status_visibility\":\"%s\",\"icon_spacing\":%d,\"folders_enabled\":%s,\"large_folders_enabled\":%s,\"animations_enabled\":%s,\"reduce_motion\":%s,\"sort\":\"%s\"}%s}",
         (unsigned long long)preferences->revision,
         preferences->layout,
         preferences->wallpaper_color,
@@ -463,6 +481,8 @@ static int state_json(
         preferences->show_labels != 0 ? "true" : "false",
         preferences->acrylic != 0 ? "true" : "false",
         preferences->navigation_mode,
+        preferences->navigation_visibility,
+        preferences->status_visibility,
         preferences->icon_spacing,
         preferences->folders_enabled != 0 ? "true" : "false",
         preferences->large_folders_enabled != 0 ? "true" : "false",

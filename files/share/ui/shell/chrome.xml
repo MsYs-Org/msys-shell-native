@@ -1,24 +1,26 @@
 <component>
-  <view extends="lv_obj" width="100%" height="100%" flex_flow="row"
-        scrollable="false" style_bg_color="#ffffff" style_bg_opa="100%"
-        style_border_width="0" style_pad_left="6" style_pad_right="6"
-        style_pad_top="3" style_pad_bottom="3" style_pad_column="2">
-    <lv_button name="notifications" width="72" height="36" style_radius="13"
-               style_bg_color="#eef3fb" style_bg_opa="100%"
-               style_shadow_width="0" style_border_width="0">
-      <lv_label text="消息" align="center" style_text_font="msys_14"
-                style_text_color="#253047"/>
+  <view extends="lv_obj" name="chrome_root" width="100%" height="100%"
+        flex_flow="row" scrollable="false" style_bg_color="#ffffff"
+        style_bg_opa="94%" style_border_width="0" style_pad_left="5"
+        style_pad_right="5" style_pad_top="3" style_pad_bottom="3"
+        style_pad_column="2">
+    <lv_button name="notifications" width="42" height="36" style_radius="18"
+               style_bg_opa="0%" style_shadow_width="0" style_border_width="0">
+      <lv_obj name="notification_icon_host" width="28" height="28"
+              align="center" clickable="false" scrollable="false"
+              style_bg_opa="0%" style_border_width="0" style_pad_all="0"/>
       <lv_event-call-function trigger="clicked" callback="shell_action"
                               user_data="notifications"/>
     </lv_button>
-    <lv_label name="clock" text="00:00:00" width="content" flex_grow="1"
+    <lv_label name="clock" text="00:00:00" width="1" flex_grow="1"
               align="center" style_text_font="msys_16"
               style_text_color="#182033"/>
-    <lv_button name="controls" width="88" height="36" style_radius="13"
-               style_bg_color="#eef3fb" style_bg_opa="100%"
-               style_shadow_width="0" style_border_width="0">
-      <lv_label name="wifi" text="Wi-Fi  ·" align="center"
-                style_text_font="msys_14" style_text_color="#253047"/>
+    <lv_button name="controls" width="42" height="36" style_radius="18"
+               style_bg_opa="0%" style_shadow_width="0" style_border_width="0">
+      <lv_obj name="wifi_icon_host" width="28" height="28" align="center"
+              clickable="false" scrollable="false" style_bg_opa="0%"
+              style_border_width="0" style_pad_all="0"/>
+      <lv_label name="wifi" text="" hidden="true"/>
       <lv_event-call-function trigger="clicked" callback="shell_action"
                               user_data="controls"/>
     </lv_button>
