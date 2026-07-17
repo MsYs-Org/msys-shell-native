@@ -1,8 +1,8 @@
 # MSYS Native Shell
 
-Current source version: `0.6.23`.
+Current source version: `0.6.24`.
 
-Version 0.6.23 commits a consumed horizontal Home gesture on both LVGL
+Version 0.6.24 commits a consumed horizontal Home gesture on both LVGL
 `RELEASED` and `PRESS_LOST`. Following the finger translates the pressed grid,
 so a real X11/touch sequence can legitimately end with `PRESS_LOST`; treating
 that as cancellation made every swipe spring back even though button paging
@@ -22,6 +22,9 @@ The launch presenter owns a separate 84px bitmap cache, so asynchronous Home
 rerenders cannot resize/free the icon while its opening animation is visible.
 Folder-member labels now select the same dynamic CJK theme font as Home tiles
 instead of falling back to LVGL's ASCII-only default font.
+Transition labels use text alignment rather than object alignment, keeping the
+application name centered inside the workarea instead of offsetting it below
+the navigation edge.
 
 Version 0.6.19 connects the Launcher's acrylic setting to the shared LVGL
 cached-acrylic runtime. The wallpaper is sampled once into a 4x-downsampled

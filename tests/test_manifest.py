@@ -17,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.23")
+        self.assertEqual(self.document["package"]["version"], "0.6.24")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.23"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.24"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "manual")
@@ -78,6 +78,7 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("msys_ui_document_find", source)
         self.assertIn("msys_native_parse_apps", source)
         self.assertIn("msys_native_parse_tasks", source)
+
         self.assertIn("msys_native_apply_task_resources", source)
         self.assertIn("msys_native_ppm_sample_resized", source)
         self.assertNotIn("XPutImage", source)
@@ -120,6 +121,22 @@ class NativeShellManifestTests(unittest.TestCase):
             "mipc.event:subscribe:msys.window.transition",
             component["permissions"],
         )
+
+    def test_transition_labels_stay_inside_the_workarea(self) -> None:
+        root = ET.parse(
+            ROOT / "files" / "share" / "ui" / "shell" / "transition.xml"
+        ).getroot()
+        named = {
+            element.attrib["name"]: element
+            for element in root.iter()
+            if "name" in element.attrib
+        }
+        for name, expected_y in (("transition_name", "196"),
+                                 ("transition_status", "232")):
+            label = named[name]
+            self.assertEqual(label.attrib["y"], expected_y)
+            self.assertEqual(label.attrib["style_text_align"], "center")
+            self.assertNotIn("align", label.attrib)
 
     def test_lvgl_launcher_async_grid_keeps_nonzero_flex_geometry(self) -> None:
         launcher_path = ROOT / "files" / "share" / "ui" / "shell" / "launcher.xml"
