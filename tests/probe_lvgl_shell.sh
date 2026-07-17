@@ -16,7 +16,7 @@ probe_state=${TMPDIR:-/tmp}/msys-shell-lvgl-state.$$
 mkdir "$probe_state"
 printf 'P6\n1 1\n255\n\000\377\000' >"$probe_icon"
 printf '%s\n' \
-    '{"schema":"msys.shell-preferences.v1","revision":1,"preferences":{"acrylic":true}}' \
+    '{"schema":"msys.shell-preferences.v1","revision":1,"preferences":{"layout":"profile","wallpaper_color":"#F4F6FA","accent_color":"#6750A4","icon_size":64,"show_labels":true,"sort":"name","acrylic":true,"navigation_mode":"pill","navigation_visibility":"always","status_visibility":"always"}}' \
     >"$probe_state/launcher-preferences.json"
 Xvfb "$display" -screen 0 320x480x24 -nolisten tcp >"$log" 2>&1 &
 xvfb_pid=$!
@@ -84,11 +84,11 @@ check_role "$chrome" system-chrome
 check_role "$navigation" navigation-bar
 check_role "$recents" task-switcher
 check_role "$transition" transition-presenter
-check_geometry "$launcher" 320 396 0 42
+check_geometry "$launcher" 320 414 0 42
 check_geometry "$chrome" 320 42 0 0
-check_geometry "$navigation" 320 42 0 438
-check_geometry "$recents" 320 396 0 42
-check_geometry "$transition" 320 396 0 42
+check_geometry "$navigation" 320 24 0 456
+check_geometry "$recents" 320 414 0 42
+check_geometry "$transition" 320 414 0 42
 DISPLAY="$display" xwininfo -id "$transition" | grep -q 'Map State: IsUnMapped'
 
 # The probe inventory is rendered before mapping. Assert the live LVGL object

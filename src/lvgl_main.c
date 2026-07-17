@@ -27,7 +27,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.25"
+#define APP_VERSION "0.6.26"
 #define SURFACE_COUNT 8u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -246,6 +246,8 @@ static volatile sig_atomic_t stopping;
 static shell_state *active_shell;
 
 static uint32_t launcher_color(const char *text, uint32_t fallback);
+static int resize_system_surfaces(shell_state *shell);
+static void update_clock(shell_state *shell);
 
 static uint64_t monotonic_ms(void)
 {
@@ -2732,6 +2734,54 @@ static void apply_layout_insets(shell_state *shell)
                     "set_layout", payload, 1);
 }
 
+static int resize_view(shell_state *shell, enum shell_surface_id id,
+                       int x, int y, int width, int height, int draw_rows)
+{
+    msys_ui_surface_t *surface;
+    if(shell == NULL || id < 0 || id >= SURFACE_COUNT || width < 1 ||
+       height < 1) return 0;
+    surface = shell->views[id].surface;
+    if(surface == NULL) return 1;
+    return msys_ui_surface_set_geometry(surface, x, y, (uint16_t)width,
+                                        (uint16_t)height,
+                                        (uint16_t)draw_rows) ? 1 : 0;
+}
+
+static int resize_system_surfaces(shell_state *shell)
+{
+    int top;
+    int navigation;
+    int work;
+    int ok = 1;
+    if(shell == NULL || shell->runtime == NULL) return 1;
+    top = shell->chrome_height > 0 ? shell->chrome_height : BAR_HEIGHT;
+    navigation = shell->navigation_height > 0
+        ? shell->navigation_height : BAR_HEIGHT;
+    work = ROOT_HEIGHT - top - navigation;
+    if(work < 1) return 0;
+    ok &= resize_view(shell, SURFACE_LAUNCHER, 0, top, ROOT_WIDTH, work,
+                      DRAW_ROWS);
+    ok &= resize_view(shell, SURFACE_CHROME, 0, 0, ROOT_WIDTH, top, top);
+    ok &= resize_view(shell, SURFACE_NAVIGATION, 0, ROOT_HEIGHT-navigation,
+                      ROOT_WIDTH, navigation, navigation);
+    ok &= resize_view(shell, SURFACE_OVERVIEW, 0, top, ROOT_WIDTH, work,
+                      DRAW_ROWS);
+    ok &= resize_view(shell, SURFACE_NOTIFICATION, 0, top, ROOT_WIDTH, work,
+                      DRAW_ROWS);
+    ok &= resize_view(shell, SURFACE_CONTROLS, 0, top, ROOT_WIDTH, work,
+                      DRAW_ROWS);
+    ok &= resize_view(shell, SURFACE_TOAST, 10, top+10, ROOT_WIDTH-20, 76, 48);
+    ok &= resize_view(shell, SURFACE_TRANSITION, 0, top, ROOT_WIDTH, work,
+                      DRAW_ROWS);
+    if(ok == 0) return 0;
+    render_launcher(shell);
+    if(shell->overview_visible != 0) render_overview(shell);
+    if(shell->notification_visible != 0) render_notifications(shell);
+    wifi_update_labels(shell);
+    update_clock(shell);
+    return 1;
+}
+
 static void request_layout(shell_state *shell)
 {
     if(shell->supervised == 0 ||
@@ -3248,50 +3298,53 @@ static int initialize_ui(shell_state *shell, const char *display_name,
         .output = output,
         .reduced_motion = reduced_motion,
     };
+    int top = preferred_status_height(shell);
+    int navigation = preferred_navigation_height(shell);
+    int work = ROOT_HEIGHT - top - navigation;
     const msys_ui_surface_config_t configs[SURFACE_COUNT] = {
-        {.x=0, .y=BAR_HEIGHT, .width=ROOT_WIDTH, .height=WORK_HEIGHT,
+        {.x=0, .y=top, .width=ROOT_WIDTH, .height=work,
          .draw_rows=DRAW_ROWS, .title="MSYS Launcher",
          .app_id="org.msys.shell.native.launcher",
          .component_id="org.msys.shell.native:desktop-shell-lvgl",
          .role="launcher", .wm_instance="msys-shell-lvgl",
          .override_redirect=false},
-        {.x=0, .y=0, .width=ROOT_WIDTH, .height=BAR_HEIGHT,
-         .draw_rows=BAR_HEIGHT, .title="MSYS Chrome",
+        {.x=0, .y=0, .width=ROOT_WIDTH, .height=top,
+         .draw_rows=top, .title="MSYS Chrome",
          .app_id="org.msys.shell.native.chrome",
          .component_id="org.msys.shell.native:desktop-shell-lvgl",
          .role="system-chrome", .wm_instance="msys-shell-lvgl",
          .override_redirect=true},
-        {.x=0, .y=ROOT_HEIGHT-BAR_HEIGHT, .width=ROOT_WIDTH, .height=BAR_HEIGHT,
-         .draw_rows=BAR_HEIGHT, .title="MSYS Navigation",
+        {.x=0, .y=ROOT_HEIGHT-navigation, .width=ROOT_WIDTH, .height=navigation,
+         .draw_rows=navigation, .title="MSYS Navigation",
          .app_id="org.msys.shell.native.navigation-pill",
          .component_id="org.msys.shell.native:desktop-shell-lvgl",
          .role="navigation-bar", .wm_instance="msys-shell-lvgl",
          .override_redirect=true},
-        {.x=0, .y=BAR_HEIGHT, .width=ROOT_WIDTH, .height=WORK_HEIGHT,
+        {.x=0, .y=top, .width=ROOT_WIDTH, .height=work,
          .draw_rows=DRAW_ROWS, .title="MSYS Recents",
          .app_id="org.msys.shell.task-switcher",
          .component_id="org.msys.shell.native:desktop-shell-lvgl",
          .role="task-switcher", .wm_instance="msys-shell-lvgl",
          .override_redirect=true},
-        {.x=0, .y=BAR_HEIGHT, .width=ROOT_WIDTH, .height=WORK_HEIGHT,
+        {.x=0, .y=top, .width=ROOT_WIDTH, .height=work,
          .draw_rows=DRAW_ROWS, .title="MSYS Notification Center",
          .app_id="org.msys.shell.native.notification-center",
          .component_id="org.msys.shell.native:desktop-shell-lvgl",
          .role="notification-center", .wm_instance="msys-shell-lvgl",
          .override_redirect=true},
-        {.x=0, .y=BAR_HEIGHT, .width=ROOT_WIDTH, .height=WORK_HEIGHT,
+        {.x=0, .y=top, .width=ROOT_WIDTH, .height=work,
          .draw_rows=DRAW_ROWS, .title="MSYS Quick Controls",
          .app_id="org.msys.shell.native.quick-controls",
          .component_id="org.msys.shell.native:desktop-shell-lvgl",
          .role="quick-controls", .wm_instance="msys-shell-lvgl",
          .override_redirect=true},
-        {.x=10, .y=BAR_HEIGHT+10, .width=ROOT_WIDTH-20, .height=76,
+        {.x=10, .y=top+10, .width=ROOT_WIDTH-20, .height=76,
          .draw_rows=48, .title="MSYS Notifications",
          .app_id="org.msys.shell.native.notifications",
          .component_id="org.msys.shell.native:desktop-shell-lvgl",
          .role="notification-presenter", .wm_instance="msys-shell-lvgl",
          .override_redirect=true},
-        {.x=0, .y=BAR_HEIGHT, .width=ROOT_WIDTH, .height=WORK_HEIGHT,
+        {.x=0, .y=top, .width=ROOT_WIDTH, .height=work,
          .draw_rows=DRAW_ROWS, .title="MSYS Launch Transition",
          .app_id="org.msys.shell.transitions",
          .component_id="org.msys.shell.native:desktop-shell-lvgl",
@@ -3305,6 +3358,8 @@ static int initialize_ui(shell_state *shell, const char *display_name,
     size_t index;
     shell->runtime = msys_ui_runtime_create(&runtime_config);
     if(shell->runtime == NULL) return 0;
+    shell->chrome_height = top;
+    shell->navigation_height = navigation;
     shell->policy = msys_ui_runtime_policy(shell->runtime);
     (void)msys_ui_dynamic_fonts_init(NULL);
     for(index = 0u; index < SURFACE_COUNT; index++) {
@@ -3567,6 +3622,11 @@ static void handle_reply(shell_state *shell, const char *packet,
             apply_layout_insets(shell);
         }
     }
+    else if(call.kind == PENDING_LAYOUT_SET) {
+        if(resize_system_surfaces(shell) == 0)
+            show_toast(shell, localized(shell, "系统栏尺寸更新失败",
+                                        "Unable to resize system bars"));
+    }
     free(payload);
 }
 
@@ -3793,8 +3853,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.25\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.25\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.26\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.26\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -4056,7 +4116,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.25\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.26\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","
