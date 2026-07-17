@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.9"
+#define APP_VERSION "0.6.10"
 #define SURFACE_COUNT 7u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -1660,9 +1660,12 @@ static void configure_interactions(shell_state *shell)
         lv_obj_move_to_index(pill_area, 1);
         lv_obj_update_layout(navigation_root);
     }
-    if(pill_area != NULL && pill != NULL && lv_obj_get_parent(pill) != pill_area) {
-        lv_obj_set_parent(pill, pill_area);
+    if(navigation_root != NULL && pill != NULL) {
+        if(lv_obj_get_parent(pill) != navigation_root)
+            lv_obj_set_parent(pill, navigation_root);
+        lv_obj_add_flag(pill, LV_OBJ_FLAG_FLOATING);
         lv_obj_center(pill);
+        lv_obj_set_flag(pill, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode != 0);
     }
     if(buttons != NULL)
         lv_obj_set_flag(buttons, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode == 0);
@@ -2056,14 +2059,18 @@ static void apply_launcher_preferences(shell_state *shell)
 {
     lv_obj_t *buttons;
     lv_obj_t *pill_area;
+    lv_obj_t *pill;
     shell->legacy_navigation_override = 0;
     shell->buttons_mode = strcmp(shell->preferences.navigation_mode, "buttons") == 0;
     buttons = view_object(&shell->views[SURFACE_NAVIGATION], "button_navigation");
     pill_area = view_object(&shell->views[SURFACE_NAVIGATION], "pill_navigation");
+    pill = view_object(&shell->views[SURFACE_NAVIGATION], "navigation_pill");
     if(buttons != NULL)
         lv_obj_set_flag(buttons, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode == 0);
     if(pill_area != NULL)
         lv_obj_set_flag(pill_area, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode != 0);
+    if(pill != NULL)
+        lv_obj_set_flag(pill, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode != 0);
     render_launcher(shell);
 }
 
@@ -2153,8 +2160,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.9\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.9\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.10\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.10\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -2372,7 +2379,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.9\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.10\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","
