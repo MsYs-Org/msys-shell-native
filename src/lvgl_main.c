@@ -9,6 +9,7 @@
 #include "msys_shell_native/system_metrics.h"
 
 #include "msys/mipc.h"
+#include "msys_ui/acrylic.h"
 #include "msys_ui/document.h"
 #include "msys_ui/fonts.h"
 #include "msys_ui/runtime.h"
@@ -26,7 +27,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.18"
+#define APP_VERSION "0.6.19"
 #define SURFACE_COUNT 8u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -139,6 +140,11 @@ struct shell_state {
     ui_bitmap app_icons[MSYS_NATIVE_MAX_APPS];
     ui_bitmap task_previews[MSYS_NATIVE_MAX_TASKS];
     ui_bitmap wallpaper;
+    msys_ui_acrylic_cache_t *launcher_acrylic;
+    msys_ui_acrylic_panel_t *launcher_acrylic_panels[
+        MSYS_NATIVE_LAUNCHER_MAX_ITEMS];
+    size_t launcher_acrylic_panel_count;
+    uint64_t launcher_acrylic_revision;
     ui_binding bindings[MAX_BINDINGS];
     size_t binding_count;
     msys_native_system_metrics metrics;
@@ -171,7 +177,6 @@ struct shell_state {
     int transition_origin_height;
     int buttons_mode;
     int legacy_navigation_override;
-    int allow_acrylic;
     int wifi_known;
     int wifi_available;
     int wifi_connected;
@@ -211,11 +216,12 @@ struct shell_state {
     int launcher_swipe_dx;
     lv_point_t launcher_swipe_origin;
     lv_obj_t *launcher_tiles[MSYS_NATIVE_LAUNCHER_MAX_ITEMS];
-    msys_ui_output_t output;
 };
 
 static volatile sig_atomic_t stopping;
 static shell_state *active_shell;
+
+static uint32_t launcher_color(const char *text, uint32_t fallback);
 
 static uint64_t monotonic_ms(void)
 {
@@ -333,6 +339,134 @@ static int bitmap_load(ui_bitmap *bitmap, const char *path, int width, int heigh
     bitmap->descriptor.data = bitmap->pixels;
     (void)snprintf(bitmap->path, sizeof(bitmap->path), "%s", path);
     return 1;
+}
+
+typedef struct {
+    uint16_t color;
+} acrylic_fill_source;
+
+typedef struct {
+    const uint8_t *pixels;
+    size_t stride;
+} acrylic_bitmap_source;
+
+static uint16_t acrylic_fill_sample(uint16_t x, uint16_t y, void *user_data)
+{
+    const acrylic_fill_source *source = user_data;
+    (void)x;
+    (void)y;
+    return source != NULL ? source->color : 0xffffu;
+}
+
+static uint16_t acrylic_bitmap_sample(uint16_t x, uint16_t y, void *user_data)
+{
+    const acrylic_bitmap_source *source = user_data;
+    const uint8_t *pixel;
+    if(source == NULL || source->pixels == NULL) return 0xffffu;
+    pixel = source->pixels + (size_t)y * source->stride + (size_t)x * 2u;
+    return (uint16_t)((uint16_t)pixel[0] | ((uint16_t)pixel[1] << 8u));
+}
+
+static uint16_t rgb888_to_rgb565(unsigned int color)
+{
+    unsigned int red = (color >> 16u) & 0xffu;
+    unsigned int green = (color >> 8u) & 0xffu;
+    unsigned int blue = color & 0xffu;
+    return (uint16_t)(((red & 0xf8u) << 8u) |
+                      ((green & 0xfcu) << 3u) | (blue >> 3u));
+}
+
+static void launcher_acrylic_dispose(shell_state *shell)
+{
+    if(shell == NULL) return;
+    msys_ui_acrylic_cache_destroy(shell->launcher_acrylic);
+    shell->launcher_acrylic = NULL;
+    shell->launcher_acrylic_revision = 0u;
+}
+
+static int launcher_acrylic_prepare(shell_state *shell)
+{
+    acrylic_fill_source fill;
+    acrylic_bitmap_source bitmap;
+    if(shell == NULL || shell->preferences.acrylic == 0) {
+        launcher_acrylic_dispose(shell);
+        return 0;
+    }
+    if(shell->launcher_acrylic != NULL &&
+       shell->launcher_acrylic_revision == shell->preferences.revision)
+        return 1;
+    launcher_acrylic_dispose(shell);
+    if(shell->wallpaper.pixels != NULL &&
+       shell->wallpaper.descriptor.header.w == ROOT_WIDTH &&
+       shell->wallpaper.descriptor.header.h == WORK_HEIGHT) {
+        bitmap.pixels = shell->wallpaper.pixels;
+        bitmap.stride = (size_t)ROOT_WIDTH * 2u;
+        shell->launcher_acrylic = msys_ui_acrylic_cache_create_sampled(
+            ROOT_WIDTH, WORK_HEIGHT, NULL, acrylic_bitmap_sample, &bitmap);
+    }
+    else {
+        fill.color = rgb888_to_rgb565(launcher_color(
+            shell->preferences.wallpaper_color, 0xf4f6fa));
+        shell->launcher_acrylic = msys_ui_acrylic_cache_create_sampled(
+            ROOT_WIDTH, WORK_HEIGHT, NULL, acrylic_fill_sample, &fill);
+    }
+    if(shell->launcher_acrylic == NULL) return 0;
+    shell->launcher_acrylic_revision = shell->preferences.revision;
+    return 1;
+}
+
+static lv_obj_t *launcher_tile_create(shell_state *shell, lv_obj_t *grid,
+                                      int width, int height,
+                                      lv_obj_t **content)
+{
+    lv_obj_t *tile;
+    lv_obj_t *body;
+    if(shell != NULL && shell->launcher_acrylic != NULL &&
+       shell->launcher_acrylic_panel_count <
+           MSYS_NATIVE_LAUNCHER_MAX_ITEMS) {
+        msys_ui_acrylic_panel_t *panel = msys_ui_acrylic_panel_create(
+            grid, shell->launcher_acrylic, NULL);
+        if(panel != NULL) {
+            tile = msys_ui_acrylic_panel_object(panel);
+            body = msys_ui_acrylic_panel_content(panel);
+            shell->launcher_acrylic_panels[
+                shell->launcher_acrylic_panel_count++] = panel;
+            lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE |
+                                  LV_OBJ_FLAG_EVENT_BUBBLE);
+            lv_obj_set_size(tile, width, height);
+            lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(body, LV_FLEX_ALIGN_CENTER,
+                                  LV_FLEX_ALIGN_CENTER,
+                                  LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_all(body, 6, LV_PART_MAIN);
+            if(content != NULL) *content = body;
+            return tile;
+        }
+    }
+    tile = lv_button_create(grid);
+    lv_obj_add_flag(tile, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_set_size(tile, width, height);
+    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_radius(tile, 18, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(tile, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(tile, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(tile, lv_color_hex(0xdde4ef), LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(tile, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(tile, 6, LV_PART_MAIN);
+    if(content != NULL) *content = tile;
+    return tile;
+}
+
+static void launcher_acrylic_sync(shell_state *shell, lv_obj_t *root)
+{
+    size_t index;
+    if(shell == NULL || shell->launcher_acrylic_panel_count == 0u) return;
+    if(root != NULL) lv_obj_update_layout(root);
+    for(index = 0u; index < shell->launcher_acrylic_panel_count; index++)
+        msys_ui_acrylic_panel_sync(shell->launcher_acrylic_panels[index]);
 }
 
 static pending_call *pending_find(shell_state *shell, uint64_t id)
@@ -584,7 +718,6 @@ static int show_launch_transition(shell_state *shell, size_t app_index,
     shell_view *view = &shell->views[SURFACE_TRANSITION];
     lv_obj_t *root = view_object(view, "transition_root");
     lv_obj_t *host = view_object(view, "transition_icon_host");
-    lv_obj_t *origin_icon = origin_object;
     lv_obj_t *icon;
     lv_area_t area;
     lv_area_t host_area;
@@ -600,11 +733,25 @@ static int show_launch_transition(shell_state *shell, size_t app_index,
         cancel_launch_observation(shell, "superseded");
         hide_launch_transition(shell);
     }
-    if(origin_object != NULL && lv_obj_get_child_count(origin_object) > 0u)
-        origin_icon = lv_obj_get_child(origin_object, 0);
     lv_obj_update_layout(root);
     lv_obj_get_coords(host, &host_area);
-    if(origin_icon != NULL) lv_obj_get_coords(origin_icon, &area);
+    if(origin_object != NULL) {
+        int size;
+        int center_x;
+        int center_y;
+        lv_obj_get_coords(origin_object, &area);
+        size = (int)lv_area_get_width(&area);
+        if(size > (int)lv_area_get_height(&area))
+            size = (int)lv_area_get_height(&area);
+        if(size > 64) size = 64;
+        if(size < 1) size = 1;
+        center_x = area.x1 + (int)lv_area_get_width(&area) / 2;
+        center_y = area.y1 + (int)lv_area_get_height(&area) / 2;
+        area.x1 = center_x - size / 2;
+        area.y1 = center_y - size / 2;
+        area.x2 = area.x1 + size - 1;
+        area.y2 = area.y1 + size - 1;
+    }
     else area = host_area;
     shell->transition_origin_x = area.x1;
     shell->transition_origin_y = area.y1;
@@ -1706,27 +1853,32 @@ static void render_launcher(shell_state *shell)
     shell->launcher_page_capacity = (size_t)columns * (size_t)rows;
     lv_obj_set_style_pad_row(grid, (int16_t)spacing, LV_PART_MAIN);
     lv_obj_set_style_pad_column(grid, (int16_t)spacing, LV_PART_MAIN);
+    memset(shell->launcher_tiles, 0, sizeof(shell->launcher_tiles));
+    memset(shell->launcher_acrylic_panels, 0,
+           sizeof(shell->launcher_acrylic_panels));
+    shell->launcher_acrylic_panel_count = 0u;
+    shell->launcher_drop_preview = NULL;
+    launcher_set_translate_x(grid, 0);
+    lv_obj_clean(grid);
     if(root != NULL) {
         lv_obj_set_style_bg_image_src(root, NULL, LV_PART_MAIN);
-        bitmap_dispose(&shell->wallpaper);
         lv_obj_set_style_bg_color(root, lv_color_hex(launcher_color(
             shell->preferences.wallpaper_color, 0xf4f6fa)), LV_PART_MAIN);
         if(shell->preferences.wallpaper_path[0] == '/' &&
            bitmap_load(&shell->wallpaper, shell->preferences.wallpaper_path,
-                       ROOT_WIDTH, WORK_HEIGHT) != 0)
+                        ROOT_WIDTH, WORK_HEIGHT) != 0)
             lv_obj_set_style_bg_image_src(root, &shell->wallpaper.descriptor,
                                           LV_PART_MAIN);
+        else
+            bitmap_dispose(&shell->wallpaper);
     }
+    (void)launcher_acrylic_prepare(shell);
     if(shell->apps_loaded != 0 &&
        msys_native_launcher_layout_reconcile(&shell->launcher_layout,
             shell->apps, shell->app_count, shell->launcher_page_capacity) != 0)
         launcher_commit(shell);
     pages = msys_native_launcher_page_count(&shell->launcher_layout);
     if(shell->launcher_page >= pages) shell->launcher_page = pages - 1u;
-    memset(shell->launcher_tiles, 0, sizeof(shell->launcher_tiles));
-    shell->launcher_drop_preview = NULL;
-    launcher_set_translate_x(grid, 0);
-    lv_obj_clean(grid);
     count = msys_native_launcher_page_items(&shell->launcher_layout,
         shell->launcher_page, indices, MSYS_NATIVE_LAUNCHER_MAX_ITEMS);
     tile_width = (width - (columns - 1) * spacing) / columns;
@@ -1744,36 +1896,26 @@ static void render_launcher(shell_state *shell)
             size_t app_index;
             ui_binding *binding;
             lv_obj_t *tile;
+            lv_obj_t *content;
             lv_obj_t *icon;
             lv_obj_t *name;
             if(!launcher_app_index(shell, folder->members[slot], &app_index)) continue;
             binding = new_binding(shell, BIND_FOLDER_MEMBER,
                                   (size_t)shell->launcher_folder);
             if(binding != NULL) binding->secondary = slot;
-            tile = lv_button_create(grid);
-            lv_obj_add_flag(tile, LV_OBJ_FLAG_EVENT_BUBBLE);
-            lv_obj_set_size(tile, tile_width, tile_height);
-            lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-            lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                                  LV_FLEX_ALIGN_CENTER);
-            lv_obj_set_style_radius(tile, 18, LV_PART_MAIN);
-            lv_obj_set_style_bg_color(tile, lv_color_hex(0xffffff), LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, LV_PART_MAIN);
-            lv_obj_set_style_border_width(tile, 1, LV_PART_MAIN);
-            lv_obj_set_style_border_color(tile, lv_color_hex(0xdde4ef), LV_PART_MAIN);
-            lv_obj_set_style_shadow_width(tile, 0, LV_PART_MAIN);
-            lv_obj_set_style_pad_all(tile, 6, LV_PART_MAIN);
+            tile = launcher_tile_create(shell, grid, tile_width, tile_height,
+                                        &content);
             if(bitmap_load(&shell->app_icons[app_index],
                            shell->apps[app_index].icon_path,
                            icon_size, icon_size) != 0)
-                icon = make_image(tile, &shell->app_icons[app_index],
+                icon = make_image(content, &shell->app_icons[app_index],
                                   icon_size, icon_size);
             else
-                icon = make_fallback_icon(view, tile,
+                icon = make_fallback_icon(view, content,
                                           shell->apps[app_index].name, icon_size);
             (void)icon;
             if(shell->preferences.show_labels != 0) {
-                name = lv_label_create(tile);
+                name = lv_label_create(content);
                 lv_obj_set_width(name, tile_width - 8);
                 lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
                 lv_label_set_text(name, shell->apps[app_index].name);
@@ -1787,6 +1929,7 @@ static void render_launcher(shell_state *shell)
         set_label_if_changed(view, "page_label", page_text);
         set_label_if_changed(view, "launcher_status",
             localized(shell, "点击左箭头关闭文件夹", "Use the left arrow to close"));
+        launcher_acrylic_sync(shell, root);
         launcher_report_geometry(shell, root, grid, folder->member_count);
         return;
     }
@@ -1797,36 +1940,26 @@ static void render_launcher(shell_state *shell)
             &shell->launcher_layout.items[item_index];
         size_t app_index = shell->app_count;
         ui_binding *binding = new_binding(shell, BIND_LAUNCHER_ITEM, item_index);
-        lv_obj_t *tile = lv_button_create(grid);
+        lv_obj_t *tile;
+        lv_obj_t *content;
         lv_obj_t *icon;
         lv_obj_t *name;
+        int rendered_width;
+        rendered_width = item->kind == MSYS_NATIVE_LAUNCHER_FOLDER &&
+            item->large != 0 && shell->preferences.large_folders_enabled != 0
+                ? tile_width * 2 + spacing : tile_width;
+        tile = launcher_tile_create(shell, grid, rendered_width, tile_height,
+                                    &content);
         shell->launcher_tiles[item_index] = tile;
-        lv_obj_add_flag(tile, LV_OBJ_FLAG_EVENT_BUBBLE);
         if(item->kind == MSYS_NATIVE_LAUNCHER_APP)
             (void)launcher_app_index(shell, item->id, &app_index);
-        lv_obj_set_size(tile,
-            item->kind == MSYS_NATIVE_LAUNCHER_FOLDER && item->large != 0 &&
-            shell->preferences.large_folders_enabled != 0
-                ? tile_width * 2 + spacing : tile_width,
-            tile_height);
-        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_radius(tile, 18, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(tile, lv_color_hex(0xffffff), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(tile,
-            shell->preferences.acrylic != 0 && shell->allow_acrylic != 0
-                ? (lv_opa_t)220 : LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_width(tile, 1, LV_PART_MAIN);
-        lv_obj_set_style_border_color(tile, lv_color_hex(0xdde4ef), LV_PART_MAIN);
-        lv_obj_set_style_shadow_width(tile, 0, LV_PART_MAIN);
-        lv_obj_set_style_pad_all(tile, 6, LV_PART_MAIN);
         if(item->kind == MSYS_NATIVE_LAUNCHER_APP && app_index < shell->app_count &&
            bitmap_load(&shell->app_icons[app_index],
-                       shell->apps[app_index].icon_path, icon_size, icon_size) != 0)
-            icon = make_image(tile, &shell->app_icons[app_index], icon_size, icon_size);
+                        shell->apps[app_index].icon_path, icon_size, icon_size) != 0)
+            icon = make_image(content, &shell->app_icons[app_index], icon_size,
+                              icon_size);
         else
-            icon = make_fallback_icon(view, tile,
+            icon = make_fallback_icon(view, content,
                 item->kind == MSYS_NATIVE_LAUNCHER_FOLDER ? item->name :
                 (app_index < shell->app_count ? shell->apps[app_index].name : "M"),
                 icon_size);
@@ -1835,7 +1968,7 @@ static void render_launcher(shell_state *shell)
             const char *label = item->kind == MSYS_NATIVE_LAUNCHER_FOLDER
                 ? item->name : (app_index < shell->app_count
                     ? shell->apps[app_index].name : item->id);
-            name = lv_label_create(tile);
+            name = lv_label_create(content);
             lv_obj_set_width(name, tile_width - 8);
             lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
             lv_label_set_text(name, label);
@@ -1856,6 +1989,7 @@ static void render_launcher(shell_state *shell)
             : (shell->launcher_editing != 0
                 ? localized(shell, "编辑模式：拖动排序或归入文件夹",
                             "Edit mode: drag to reorder or group") : ""));
+    launcher_acrylic_sync(shell, root);
     launcher_report_geometry(shell, root, grid, count);
 }
 
@@ -2958,8 +3092,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.18\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.18\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.19\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.19\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -3145,6 +3279,7 @@ static void shutdown_shell(shell_state *shell)
         if(shell->views[index].theme != NULL)
             msys_ui_theme_destroy(shell->views[index].theme);
     }
+    launcher_acrylic_dispose(shell);
     if(shell->supervised != 0) msys_mipc_client_close(&shell->ipc);
     msys_ui_dynamic_fonts_shutdown();
     if(shell->runtime != NULL) msys_ui_runtime_destroy(shell->runtime);
@@ -3209,7 +3344,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.18\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.19\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","
@@ -3252,10 +3387,6 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    shell.output = output;
-    shell.allow_acrylic = output == MSYS_UI_OUTPUT_HDMI ||
-        (getenv("MSYS_UI_ALLOW_ACRYLIC") != NULL &&
-         strcmp(getenv("MSYS_UI_ALLOW_ACRYLIC"), "1") == 0);
     active_shell = &shell;
     (void)signal(SIGINT, signal_handler);
     (void)signal(SIGTERM, signal_handler);

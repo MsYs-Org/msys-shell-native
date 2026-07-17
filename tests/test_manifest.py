@@ -17,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.18")
+        self.assertEqual(self.document["package"]["version"], "0.6.19")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.18"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.19"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "manual")
@@ -173,6 +173,12 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("lv_obj_move_to_index(header, 0)", source)
         self.assertIn("lv_obj_move_to_index(grid, 1)", source)
         self.assertIn("lv_obj_move_to_index(status, 2)", source)
+        self.assertIn('#include "msys_ui/acrylic.h"', source)
+        self.assertIn("msys_ui_acrylic_cache_create_sampled", source)
+        self.assertIn("msys_ui_acrylic_panel_create", source)
+        self.assertIn("msys_ui_acrylic_panel_sync", source)
+        self.assertNotIn("MSYS_UI_ALLOW_ACRYLIC", source)
+        self.assertNotIn("allow_acrylic", source)
         self.assertIn('"navigation_root"', source)
         self.assertIn("lv_obj_set_parent(pill_area, navigation_root)", source)
         self.assertIn("lv_obj_set_parent(pill, navigation_root)", source)

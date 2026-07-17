@@ -15,6 +15,9 @@ probe_icon=${TMPDIR:-/tmp}/msys-shell-lvgl-icon.$$.ppm
 probe_state=${TMPDIR:-/tmp}/msys-shell-lvgl-state.$$
 mkdir "$probe_state"
 printf 'P6\n1 1\n255\n\000\377\000' >"$probe_icon"
+printf '%s\n' \
+    '{"schema":"msys.shell-preferences.v1","revision":1,"preferences":{"acrylic":true}}' \
+    >"$probe_state/launcher-preferences.json"
 Xvfb "$display" -screen 0 320x480x24 -nolisten tcp >"$log" 2>&1 &
 xvfb_pid=$!
 shell_pid=
@@ -24,6 +27,7 @@ cleanup() {
     wait "$xvfb_pid" 2>/dev/null || true
     rm -f "$log" "$shell_log" "$probe_icon"
     rm -f "$probe_state/launcher-layout.v1"
+    rm -f "$probe_state/launcher-preferences.json"
     rmdir "$probe_state" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM

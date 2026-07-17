@@ -1,6 +1,14 @@
 # MSYS Native Shell
 
-Current source version: `0.6.18`.
+Current source version: `0.6.19`.
+
+Version 0.6.19 connects the Launcher's acrylic setting to the shared LVGL
+cached-acrylic runtime. The wallpaper is sampled once into a 4x-downsampled
+RGB565 pre-blur with static grain; every visible Home/folder tile shares that
+roughly 16 KiB workarea cache and adds a light tint, white edge and shadow.
+SPI now uses the same bounded path as HDMI instead of silently disabling the
+setting. The cache has no timer, live capture, compositor pass or dirty rule,
+and is rebuilt only when the launcher preference revision changes.
 
 Version 0.6.18 replaces the LVGL Launcher's fixed 750ms tile with a dedicated
 full-workarea `transition-presenter` surface. A tap immediately maps a bright
