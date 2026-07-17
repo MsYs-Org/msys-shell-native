@@ -1,6 +1,10 @@
 # MSYS Native Shell
 
-Current source version: `0.6.6`.
+Current source version: `0.6.7`.
+
+Version 0.6.7 makes the parity-complete LVGL shell the supervised default and
+keeps Xlib as an explicit manual fallback, preventing two full Shell processes
+from occupying the same system-UI roles.
 
 Version 0.6.6 explicitly applies the vertical flex flow to the named
 `launcher_root` view inside the instantiated XML component. The document API

@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.6"
+#define APP_VERSION "0.6.7"
 #define SURFACE_COUNT 7u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -2137,8 +2137,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.6\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.6\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.7\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.7\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -2356,7 +2356,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.6\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.7\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","
