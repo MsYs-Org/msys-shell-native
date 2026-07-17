@@ -691,3 +691,24 @@ void msys_native_layout_compute(
         layout->content_height = 1;
     }
 }
+
+int msys_native_launch_transition_matches(
+    const char *active_id,
+    const char *active_component,
+    const char *event_id,
+    const char *event_component,
+    const char *event_action
+)
+{
+    return active_id != NULL && active_id[0] != '\0' &&
+        active_component != NULL && active_component[0] != '\0' &&
+        event_id != NULL && event_component != NULL && event_action != NULL &&
+        strcmp(active_id, event_id) == 0 &&
+        strcmp(active_component, event_component) == 0 &&
+        strcmp(event_action, "launch") == 0;
+}
+
+int msys_native_transition_expired(uint64_t deadline_ms, uint64_t now_ms)
+{
+    return deadline_ms != 0u && now_ms >= deadline_ms;
+}

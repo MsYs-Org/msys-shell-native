@@ -26,8 +26,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.17"
-#define SURFACE_COUNT 7u
+#define APP_VERSION "0.6.18"
+#define SURFACE_COUNT 8u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
 #define ROOT_HEIGHT 480
@@ -40,6 +40,7 @@
 #define METRICS_INTERVAL_MS 1000u
 #define WIFI_REFRESH_INTERVAL_MS 10000u
 #define TOAST_VISIBLE_MS 1800u
+#define LAUNCH_TRANSITION_TIMEOUT_MS 8000u
 #define LAUNCHER_LONG_PRESS_MS 520u
 #define LAUNCHER_EDGE_PX 24
 #define LAUNCHER_EDGE_DWELL_MS 420u
@@ -52,7 +53,8 @@ enum shell_surface_id {
     SURFACE_OVERVIEW,
     SURFACE_NOTIFICATION,
     SURFACE_CONTROLS,
-    SURFACE_TOAST
+    SURFACE_TOAST,
+    SURFACE_TRANSITION
 };
 
 enum pending_kind {
@@ -61,6 +63,8 @@ enum pending_kind {
     PENDING_TASKS,
     PENDING_TASK_RESOURCES,
     PENDING_START,
+    PENDING_BEGIN_TRANSITION,
+    PENDING_CANCEL_TRANSITION,
     PENDING_FOCUS,
     PENDING_CLOSE,
     PENDING_NAVIGATION,
@@ -141,6 +145,7 @@ struct shell_state {
     msys_native_notification_history notifications;
     msys_native_gesture pill_gesture;
     lv_timer_t *toast_timer;
+    lv_timer_t *transition_finish_timer;
     uint64_t next_metrics_at;
     uint64_t next_xml_watch_at;
     uint64_t next_wifi_refresh_at;
@@ -150,6 +155,20 @@ struct shell_state {
     int notification_visible;
     int controls_visible;
     int toast_visible;
+    int transition_visible;
+    int transition_finishing;
+    uint64_t transition_sequence;
+    uint64_t transition_deadline;
+    uint64_t transition_opening_until;
+    uint64_t transition_begin_call_id;
+    uint64_t transition_start_call_id;
+    size_t transition_app_index;
+    char transition_id[97];
+    char transition_component[MSYS_NATIVE_COMPONENT_CAPACITY];
+    int transition_origin_x;
+    int transition_origin_y;
+    int transition_origin_width;
+    int transition_origin_height;
     int buttons_mode;
     int legacy_navigation_override;
     int allow_acrylic;
@@ -428,35 +447,235 @@ static void show_toast(shell_state *shell, const char *message)
     shell->toast_timer = lv_timer_create(toast_hide_cb, TOAST_VISIBLE_MS, shell);
 }
 
-static void opening_delete_cb(lv_timer_t *timer)
+static lv_obj_t *make_image(lv_obj_t *parent, ui_bitmap *bitmap, int width,
+                            int height);
+static lv_obj_t *make_fallback_icon(shell_view *view, lv_obj_t *parent,
+                                    const char *name, int size);
+
+static void transition_set_translate_x(void *object, int32_t value)
 {
-    lv_obj_t *object = lv_timer_get_user_data(timer);
-    if(object != NULL && lv_obj_is_valid(object)) lv_obj_delete(object);
-    lv_timer_delete(timer);
+    lv_obj_set_style_translate_x(object, value, LV_PART_MAIN);
 }
 
-static void show_opening(shell_state *shell, const char *name)
+static void transition_set_translate_y(void *object, int32_t value)
 {
-    shell_view *view = &shell->views[SURFACE_LAUNCHER];
-    lv_obj_t *overlay = lv_obj_create(msys_ui_surface_screen(view->surface));
-    lv_obj_t *label;
-    lv_obj_set_size(overlay, 86, 86);
-    lv_obj_align(overlay, LV_ALIGN_CENTER, 0, -8);
-    lv_obj_set_style_radius(overlay, 24, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(overlay, lv_color_hex(0x3f66e8), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(overlay, 0, LV_PART_MAIN);
-    label = lv_label_create(overlay);
-    lv_obj_set_width(label, 72);
-    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-    lv_label_set_text(label, name);
-    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_set_style_text_color(label, lv_color_hex(0xffffff), LV_PART_MAIN);
-    lv_obj_set_style_text_font(label, msys_ui_theme_font(view->theme, 14),
-                               LV_PART_MAIN);
-    lv_obj_center(label);
-    msys_ui_animate_opening(overlay, shell->policy);
-    (void)lv_timer_create(opening_delete_cb, 750u, overlay);
+    lv_obj_set_style_translate_y(object, value, LV_PART_MAIN);
+}
+
+static void transition_set_scale(void *object, int32_t value)
+{
+    lv_obj_set_style_transform_scale(object, value, LV_PART_MAIN);
+}
+
+static void transition_animate(lv_obj_t *object, lv_anim_exec_xcb_t callback,
+                               int32_t from, int32_t to, uint16_t duration)
+{
+    lv_anim_t animation;
+    lv_anim_delete(object, callback);
+    if(duration == 0u) {
+        callback(object, to);
+        return;
+    }
+    callback(object, from);
+    lv_anim_init(&animation);
+    lv_anim_set_var(&animation, object);
+    lv_anim_set_values(&animation, from, to);
+    lv_anim_set_duration(&animation, duration);
+    lv_anim_set_exec_cb(&animation, callback);
+    lv_anim_set_path_cb(&animation, lv_anim_path_ease_out);
+    (void)lv_anim_start(&animation);
+}
+
+static uint16_t transition_motion_duration(const shell_state *shell)
+{
+    if(shell->preferences.animations_enabled == 0 ||
+       shell->preferences.reduce_motion != 0)
+        return 0u;
+    return msys_ui_motion_duration(shell->policy, MSYS_UI_MOTION_OPENING);
+}
+
+static void hide_launch_transition(shell_state *shell)
+{
+    if(shell == NULL) return;
+    if(shell->transition_finish_timer != NULL) {
+        lv_timer_delete(shell->transition_finish_timer);
+        shell->transition_finish_timer = NULL;
+    }
+    if(shell->transition_visible != 0)
+        msys_ui_surface_hide(shell->views[SURFACE_TRANSITION].surface);
+    shell->transition_visible = 0;
+    shell->transition_finishing = 0;
+    shell->transition_deadline = 0u;
+    shell->transition_opening_until = 0u;
+    shell->transition_begin_call_id = 0u;
+    shell->transition_start_call_id = 0u;
+    shell->transition_id[0] = '\0';
+    shell->transition_component[0] = '\0';
+}
+
+static void transition_finish_cb(lv_timer_t *timer)
+{
+    shell_state *shell = lv_timer_get_user_data(timer);
+    if(shell != NULL) shell->transition_finish_timer = NULL;
+    lv_timer_delete(timer);
+    hide_launch_transition(shell);
+}
+
+static void begin_transition_finish_feedback(shell_state *shell)
+{
+    lv_obj_t *host;
+    int32_t scale;
+    const uint16_t duration = 100u;
+    if(shell == NULL || shell->transition_visible == 0) return;
+    host = view_object(&shell->views[SURFACE_TRANSITION],
+                       "transition_icon_host");
+    if(host == NULL) {
+        hide_launch_transition(shell);
+        return;
+    }
+    scale = lv_obj_get_style_transform_scale_x(host, LV_PART_MAIN);
+    transition_animate(host, transition_set_scale, scale, 288, duration);
+    shell->transition_finish_timer = lv_timer_create(
+        transition_finish_cb, duration, shell);
+    if(shell->transition_finish_timer == NULL)
+        hide_launch_transition(shell);
+}
+
+static void transition_opening_complete_cb(lv_timer_t *timer)
+{
+    shell_state *shell = lv_timer_get_user_data(timer);
+    if(shell != NULL) shell->transition_finish_timer = NULL;
+    lv_timer_delete(timer);
+    begin_transition_finish_feedback(shell);
+}
+
+static void cancel_launch_observation(shell_state *shell, const char *reason)
+{
+    char payload[256];
+    if(shell == NULL || shell->supervised == 0 || shell->transition_id[0] == '\0')
+        return;
+    (void)snprintf(payload, sizeof(payload),
+        "{\"transition_id\":\"%s\",\"reason\":\"%s\"}",
+        shell->transition_id, reason != NULL ? reason : "shell-cancelled");
+    (void)send_call(shell, PENDING_CANCEL_TRANSITION,
+                    shell->transition_app_index, "role:window-manager",
+                    "cancel_transition", payload, 1);
+}
+
+static void fail_launch_transition(shell_state *shell, const char *reason,
+                                   int cancel_observation)
+{
+    char message[192];
+    if(shell == NULL || shell->transition_visible == 0) return;
+    if(cancel_observation != 0)
+        cancel_launch_observation(shell,
+            reason != NULL ? reason : "launch-failed");
+    hide_launch_transition(shell);
+    (void)snprintf(message, sizeof(message), "%s%s%s",
+        localized(shell, "应用启动失败", "Application launch failed"),
+        reason != NULL && reason[0] != '\0' ? ": " : "",
+        reason != NULL ? reason : "");
+    show_toast(shell, message);
+}
+
+static int show_launch_transition(shell_state *shell, size_t app_index,
+                                  lv_obj_t *origin_object)
+{
+    shell_view *view = &shell->views[SURFACE_TRANSITION];
+    lv_obj_t *root = view_object(view, "transition_root");
+    lv_obj_t *host = view_object(view, "transition_icon_host");
+    lv_obj_t *origin_icon = origin_object;
+    lv_obj_t *icon;
+    lv_area_t area;
+    lv_area_t host_area;
+    uint16_t duration;
+    int origin_center_x;
+    int origin_center_y;
+    int host_center_x;
+    int host_center_y;
+    int scale;
+    if(shell == NULL || app_index >= shell->app_count || root == NULL || host == NULL)
+        return 0;
+    if(shell->transition_visible != 0) {
+        cancel_launch_observation(shell, "superseded");
+        hide_launch_transition(shell);
+    }
+    if(origin_object != NULL && lv_obj_get_child_count(origin_object) > 0u)
+        origin_icon = lv_obj_get_child(origin_object, 0);
+    lv_obj_update_layout(root);
+    lv_obj_get_coords(host, &host_area);
+    if(origin_icon != NULL) lv_obj_get_coords(origin_icon, &area);
+    else area = host_area;
+    shell->transition_origin_x = area.x1;
+    shell->transition_origin_y = area.y1;
+    shell->transition_origin_width = (int)lv_area_get_width(&area);
+    shell->transition_origin_height = (int)lv_area_get_height(&area);
+    shell->transition_app_index = app_index;
+    shell->transition_sequence++;
+    (void)snprintf(shell->transition_id, sizeof(shell->transition_id),
+                   "lvgl-%ld-%llu", (long)getpid(),
+                   (unsigned long long)shell->transition_sequence);
+    (void)snprintf(shell->transition_component,
+                   sizeof(shell->transition_component), "%s",
+                   shell->apps[app_index].component);
+    shell->transition_deadline = monotonic_ms() + LAUNCH_TRANSITION_TIMEOUT_MS;
+    shell->transition_visible = 1;
+    shell->transition_finishing = 0;
+    set_label_if_changed(view, "transition_name", shell->apps[app_index].name);
+    lv_obj_clean(host);
+    if(bitmap_load(&shell->app_icons[app_index],
+                   shell->apps[app_index].icon_path, 84, 84) != 0)
+        icon = make_image(host, &shell->app_icons[app_index], 84, 84);
+    else icon = make_fallback_icon(view, host, shell->apps[app_index].name, 84);
+    if(icon != NULL) lv_obj_center(icon);
+    lv_obj_update_layout(root);
+    lv_obj_get_coords(host, &host_area);
+    origin_center_x = area.x1 + shell->transition_origin_width / 2;
+    origin_center_y = area.y1 + shell->transition_origin_height / 2;
+    host_center_x = host_area.x1 + (int)lv_area_get_width(&host_area) / 2;
+    host_center_y = host_area.y1 + (int)lv_area_get_height(&host_area) / 2;
+    scale = shell->transition_origin_width * 256 / 84;
+    if(scale < 64) scale = 64;
+    if(scale > 384) scale = 384;
+    duration = transition_motion_duration(shell);
+    shell->transition_opening_until = monotonic_ms() + duration;
+    lv_obj_set_style_transform_pivot_x(host, 42, LV_PART_MAIN);
+    lv_obj_set_style_transform_pivot_y(host, 42, LV_PART_MAIN);
+    transition_animate(host, transition_set_translate_x,
+        origin_center_x - host_center_x, 0, duration);
+    transition_animate(host, transition_set_translate_y,
+        origin_center_y - host_center_y, 0, duration);
+    transition_animate(host, transition_set_scale, scale, 256, duration);
+    msys_ui_surface_show(view->surface);
+    return 1;
+}
+
+static void complete_launch_transition(shell_state *shell)
+{
+    uint16_t duration;
+    uint64_t now;
+    uint64_t remaining;
+    if(shell == NULL || shell->transition_visible == 0 ||
+       shell->transition_finishing != 0)
+        return;
+    shell->transition_finishing = 1;
+    shell->transition_deadline = 0u;
+    duration = transition_motion_duration(shell);
+    if(duration == 0u) {
+        hide_launch_transition(shell);
+        return;
+    }
+    now = monotonic_ms();
+    if(now < shell->transition_opening_until) {
+        remaining = shell->transition_opening_until - now;
+        if(remaining > UINT32_MAX) remaining = UINT32_MAX;
+        shell->transition_finish_timer = lv_timer_create(
+            transition_opening_complete_cb, (uint32_t)remaining, shell);
+        if(shell->transition_finish_timer == NULL)
+            begin_transition_finish_feedback(shell);
+        return;
+    }
+    begin_transition_finish_feedback(shell);
 }
 
 static ui_binding *new_binding(shell_state *shell, enum binding_action action,
@@ -487,17 +706,56 @@ static void request_wifi_inventory(shell_state *shell);
 static void send_navigation(shell_state *shell, const char *action);
 static int event_point(lv_event_t *event, lv_point_t *point);
 
-static void start_app(shell_state *shell, size_t index)
+static void start_app_at(shell_state *shell, size_t index, lv_obj_t *origin)
 {
     char payload[MSYS_NATIVE_COMPONENT_CAPACITY * 2u + 32u];
+    char observe[MSYS_NATIVE_PATH_CAPACITY * 2u + 1024u];
+    char escaped_component[MSYS_NATIVE_COMPONENT_CAPACITY * 2u];
+    char escaped_icon[MSYS_NATIVE_PATH_CAPACITY * 2u];
+    uint64_t begin_id = 0u;
+    uint64_t start_id;
     if(index >= shell->app_count ||
        component_payload(shell->apps[index].component, payload,
-                         sizeof(payload)) == 0)
+                         sizeof(payload)) == 0 ||
+       msys_native_json_escape(shell->apps[index].component,
+            escaped_component, sizeof(escaped_component)) == 0 ||
+       msys_native_json_escape(shell->apps[index].icon_path,
+            escaped_icon, sizeof(escaped_icon)) == 0)
         return;
-    show_opening(shell, shell->apps[index].name);
-    if(send_call(shell, PENDING_START, index, "msys.core", "start", payload,
-                 0) == 0u)
-        show_toast(shell, localized(shell, "无法启动应用", "Unable to start app"));
+    if(show_launch_transition(shell, index, origin) != 0) {
+        (void)snprintf(observe, sizeof(observe),
+            "{\"transition_id\":\"%s\",\"component\":\"%s\","
+            "\"icon\":\"%s\",\"color\":\"#f4f7fb\","
+            "\"origin\":{\"x\":%d,\"y\":%d,\"width\":%d,"
+            "\"height\":%d},\"timeout_ms\":%u}",
+            shell->transition_id, escaped_component, escaped_icon,
+            shell->transition_origin_x,
+            shell->transition_origin_y + BAR_HEIGHT,
+            shell->transition_origin_width, shell->transition_origin_height,
+            LAUNCH_TRANSITION_TIMEOUT_MS);
+        begin_id = send_call(shell, PENDING_BEGIN_TRANSITION, index,
+            "role:window-manager", "begin_launch_transition", observe, 1);
+        shell->transition_begin_call_id = begin_id;
+        if(begin_id == 0u)
+            fail_launch_transition(shell, "transition-observer-unavailable", 0);
+    }
+    start_id = send_call(shell, PENDING_START, index, "msys.core", "start",
+                         payload, 0);
+    if(shell->transition_visible != 0)
+        shell->transition_start_call_id = start_id;
+    if(start_id == 0u) {
+        if(shell->transition_visible != 0)
+            fail_launch_transition(shell, "core-start-unavailable",
+                                   begin_id != 0u);
+        else
+            show_toast(shell, localized(shell, "无法启动应用",
+                                        "Unable to start app"));
+    }
+}
+
+static void start_app(shell_state *shell, size_t index)
+{
+    start_app_at(shell, index, NULL);
 }
 
 static void focus_task(shell_state *shell, size_t index)
@@ -998,7 +1256,7 @@ static void launcher_item_event_cb(lv_event_t *event)
         else if(shell->launcher_editing == 0) {
             size_t app_index;
             if(launcher_app_index(shell, item->id, &app_index))
-                start_app(shell, app_index);
+                start_app_at(shell, app_index, object);
         }
     }
 }
@@ -1103,7 +1361,7 @@ static void launcher_folder_member_event_cb(lv_event_t *event)
         size_t app_index;
         if(launcher_app_index(shell, folder->members[binding->secondary],
                               &app_index))
-            start_app(shell, app_index);
+            start_app_at(shell, app_index, object);
     }
 }
 
@@ -2313,10 +2571,16 @@ static int initialize_ui(shell_state *shell, const char *display_name,
          .component_id="org.msys.shell.native:desktop-shell-lvgl",
          .role="notification-presenter", .wm_instance="msys-shell-lvgl",
          .override_redirect=true},
+        {.x=0, .y=BAR_HEIGHT, .width=ROOT_WIDTH, .height=WORK_HEIGHT,
+         .draw_rows=DRAW_ROWS, .title="MSYS Launch Transition",
+         .app_id="org.msys.shell.transitions",
+         .component_id="org.msys.shell.native:desktop-shell-lvgl",
+         .role="transition-presenter", .wm_instance="msys-shell-lvgl",
+         .override_redirect=true},
     };
     const char *documents[SURFACE_COUNT] = {
         "launcher.xml", "chrome.xml", "navigation.xml", "overview.xml",
-        "notification.xml", "controls.xml", "toast.xml"
+        "notification.xml", "controls.xml", "toast.xml", "transition.xml"
     };
     size_t index;
     shell->runtime = msys_ui_runtime_create(&runtime_config);
@@ -2372,13 +2636,42 @@ static int initialize_ipc(shell_state *shell)
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.hal.changed");
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.role.notification-presenter");
     (void)msys_mipc_send_subscribe(&shell->ipc, "msys.notification.post");
+    (void)msys_mipc_send_subscribe(&shell->ipc, "msys.window.transition");
     if(msys_mipc_send_ready(&shell->ipc) != MSYS_MIPC_OK) return 0;
     (void)msys_mipc_send_event_json(
         &shell->ipc, "msys.role.ready",
-        "{\"role\":\"lvgl-shell\",\"roles\":[\"launcher\",\"system-chrome\",\"navigation-bar\",\"task-switcher\",\"notification-presenter\",\"notification-center\"]}");
+        "{\"role\":\"lvgl-shell\",\"roles\":[\"launcher\",\"system-chrome\",\"navigation-bar\",\"task-switcher\",\"notification-presenter\",\"notification-center\",\"transition-presenter\"]}");
     request_apps(shell);
     request_wifi_inventory(shell);
     return 1;
+}
+
+static int json_boolean_true(const char *object, const char *key)
+{
+    const char *raw = NULL;
+    size_t length = 0u;
+    return object != NULL && key != NULL &&
+        msys_mipc_json_get_raw(object, key, &raw, &length) == MSYS_MIPC_OK &&
+        length == 4u && memcmp(raw, "true", 4u) == 0;
+}
+
+static int begin_transition_reply_matches(shell_state *shell,
+                                          const char *payload)
+{
+    char schema[64];
+    char transition_id[97];
+    char component[MSYS_NATIVE_COMPONENT_CAPACITY];
+    return shell->transition_visible != 0 && payload != NULL &&
+        json_boolean_true(payload, "ok") &&
+        msys_mipc_json_get_string(payload, "schema", schema,
+                                  sizeof(schema), NULL) == MSYS_MIPC_OK &&
+        strcmp(schema, "msys.window-transition.v1") == 0 &&
+        msys_mipc_json_get_string(payload, "transition_id", transition_id,
+                                  sizeof(transition_id), NULL) == MSYS_MIPC_OK &&
+        msys_mipc_json_get_string(payload, "component", component,
+                                  sizeof(component), NULL) == MSYS_MIPC_OK &&
+        strcmp(transition_id, shell->transition_id) == 0 &&
+        strcmp(component, shell->transition_component) == 0;
 }
 
 static void handle_reply(shell_state *shell, const char *packet,
@@ -2395,7 +2688,18 @@ static void handle_reply(shell_state *shell, const char *packet,
     call = *owned;
     memset(owned, 0, sizeof(*owned));
     if(success == 0 || json_payload_copy(packet, &payload) == 0) {
-        if(call.kind == PENDING_TASKS) {
+        if(call.kind == PENDING_BEGIN_TRANSITION &&
+           call.id == shell->transition_begin_call_id)
+            fail_launch_transition(shell, "transition-observer-error", 0);
+        else if(call.kind == PENDING_START) {
+            if(call.id == shell->transition_start_call_id &&
+               shell->transition_visible != 0)
+                fail_launch_transition(shell, "core-start-error", 1);
+            else
+                show_toast(shell, localized(shell, "无法启动应用",
+                                            "Unable to start app"));
+        }
+        else if(call.kind == PENDING_TASKS) {
             shell->overview_pending = 0;
             show_toast(shell, localized(shell, "无法读取最近任务",
                                        "Unable to load recent tasks"));
@@ -2430,6 +2734,15 @@ static void handle_reply(shell_state *shell, const char *packet,
                       localized(shell, "应用列表格式无效",
                                 "The app list is invalid"));
         }
+    }
+    else if(call.kind == PENDING_BEGIN_TRANSITION) {
+        if(call.id == shell->transition_begin_call_id &&
+           begin_transition_reply_matches(shell, payload) == 0)
+            fail_launch_transition(shell, "invalid-transition-response", 1);
+    }
+    else if(call.kind == PENDING_START) {
+        /* A successful Core start is not visual completion. The exact
+         * surface-ready event owns the transition lifetime. */
     }
     else if(call.kind == PENDING_TASKS) {
         if(msys_native_parse_tasks(payload, shell->tasks, MSYS_NATIVE_MAX_TASKS,
@@ -2645,8 +2958,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.17\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.17\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.18\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.18\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -2661,7 +2974,34 @@ static void handle_event(shell_state *shell, const char *packet)
     if(msys_mipc_json_get_string(packet, "topic", topic, sizeof(topic), NULL) !=
        MSYS_MIPC_OK)
         return;
-    if(strcmp(topic, "msys.role.notification-presenter") == 0 ||
+    if(strcmp(topic, "msys.window.transition") == 0) {
+        char transition_id[97];
+        char component[MSYS_NATIVE_COMPONENT_CAPACITY];
+        char action[24];
+        char phase[32];
+        char reason[96] = "window-transition-failed";
+        if(json_payload_copy(packet, &payload) == 0) return;
+        if(msys_mipc_json_get_string(payload, "transition_id", transition_id,
+               sizeof(transition_id), NULL) == MSYS_MIPC_OK &&
+           msys_mipc_json_get_string(payload, "component", component,
+               sizeof(component), NULL) == MSYS_MIPC_OK &&
+           msys_mipc_json_get_string(payload, "action", action,
+               sizeof(action), NULL) == MSYS_MIPC_OK &&
+           msys_mipc_json_get_string(payload, "phase", phase,
+               sizeof(phase), NULL) == MSYS_MIPC_OK &&
+           msys_native_launch_transition_matches(shell->transition_id,
+               shell->transition_component, transition_id, component, action)) {
+            if(strcmp(phase, "surface-ready") == 0)
+                complete_launch_transition(shell);
+            else if(strcmp(phase, "failed") == 0) {
+                (void)msys_mipc_json_get_string(payload, "reason", reason,
+                                                 sizeof(reason), NULL);
+                fail_launch_transition(shell, reason, 0);
+            }
+        }
+        free(payload);
+    }
+    else if(strcmp(topic, "msys.role.notification-presenter") == 0 ||
        strcmp(topic, "msys.notification.post") == 0) {
         const msys_native_notification *newest;
         if(json_payload_copy(packet, &payload) == 0) return;
@@ -2759,6 +3099,9 @@ static int event_loop(shell_state *shell)
             if(msys_ui_surface_closed(shell->views[index].surface)) return 0;
         }
         current = monotonic_ms();
+        if(shell->transition_visible != 0 &&
+           msys_native_transition_expired(shell->transition_deadline, current))
+            fail_launch_transition(shell, "shell-timeout", 1);
         update_clock(shell);
         if(shell->overview_visible != 0 && current >= shell->next_metrics_at) {
             render_metrics(shell);
@@ -2866,11 +3209,11 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.17\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.18\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","
-                 "\"notification-presenter\"],"
+                 "\"notification-presenter\",\"transition-presenter\"],"
                  "\"fallback\":\"msys-shell-native\"}");
             free(shell.packet);
             return 0;

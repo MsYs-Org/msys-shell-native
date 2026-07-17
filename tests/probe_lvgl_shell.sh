@@ -32,7 +32,7 @@ sleep 0.2
 DISPLAY="$display" MSYS_LOCALE=zh_CN.UTF-8 \
     MSYS_COMPONENT_STATE_DIR="$probe_state" \
     bin/msys-shell-lvgl --output spi --ui-dir files/share/ui/shell \
-    --probe-launcher "$probe_icon" --run-ms 3200 2>"$shell_log" &
+    --probe-launcher "$probe_icon" --run-ms 6000 2>"$shell_log" &
 shell_pid=$!
 
 attempt=0
@@ -54,6 +54,7 @@ launcher=$(printf '%s\n' "$tree" | awk '/MSYS Launcher/{print $1; exit}')
 chrome=$(printf '%s\n' "$tree" | awk '/MSYS Chrome/{print $1; exit}')
 navigation=$(printf '%s\n' "$tree" | awk '/MSYS Navigation/{print $1; exit}')
 recents=$(printf '%s\n' "$tree" | awk '/MSYS Recents/{print $1; exit}')
+transition=$(printf '%s\n' "$tree" | awk '/MSYS Launch Transition/{print $1; exit}')
 
 check_role() {
     window=$1
@@ -78,10 +79,13 @@ check_role "$launcher" launcher
 check_role "$chrome" system-chrome
 check_role "$navigation" navigation-bar
 check_role "$recents" task-switcher
+check_role "$transition" transition-presenter
 check_geometry "$launcher" 320 396 0 42
 check_geometry "$chrome" 320 42 0 0
 check_geometry "$navigation" 320 42 0 438
 check_geometry "$recents" 320 396 0 42
+check_geometry "$transition" 320 396 0 42
+DISPLAY="$display" xwininfo -id "$transition" | grep -q 'Map State: IsUnMapped'
 
 # The probe inventory is rendered before mapping. Assert the live LVGL object
 # geometry rather than only checking that the outer X11 window exists.
@@ -141,27 +145,33 @@ set -- $(printf '%s\n' "$header_line" | awk '
 attempt=0
 stable=0
 previous=$(DISPLAY="$display" xprop -id "$launcher" _MSYS_LVGL_LAST_FLUSH)
-while [ "$attempt" -lt 10 ]; do
+while [ "$attempt" -lt 20 ]; do
     sleep 0.10
     current=$(DISPLAY="$display" xprop -id "$launcher" _MSYS_LVGL_LAST_FLUSH)
     if [ "$current" = "$previous" ]; then
         stable=$((stable + 1))
-        [ "$stable" -ge 3 ] && break
+        [ "$stable" -ge 6 ] && break
     else
         stable=0
     fi
     previous=$current
     attempt=$((attempt + 1))
 done
-[ "$stable" -ge 3 ] || {
+[ "$stable" -ge 6 ] || {
     echo "lvgl-shell-probe: launcher did not settle after mapping" >&2
     exit 1
 }
 first=$current
+transition_first=$(DISPLAY="$display" xprop -id "$transition" _MSYS_LVGL_LAST_FLUSH)
 sleep 1.10
 second=$(DISPLAY="$display" xprop -id "$launcher" _MSYS_LVGL_LAST_FLUSH)
+transition_second=$(DISPLAY="$display" xprop -id "$transition" _MSYS_LVGL_LAST_FLUSH)
 [ "$first" = "$second" ] || {
     echo "lvgl-shell-probe: idle launcher kept refreshing" >&2
+    exit 1
+}
+[ "$transition_first" = "$transition_second" ] || {
+    echo "lvgl-shell-probe: hidden launch transition kept refreshing" >&2
     exit 1
 }
 

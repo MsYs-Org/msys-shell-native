@@ -1,6 +1,16 @@
 # MSYS Native Shell
 
-Current source version: `0.6.17`.
+Current source version: `0.6.18`.
+
+Version 0.6.18 replaces the LVGL Launcher's fixed 750ms tile with a dedicated
+full-workarea `transition-presenter` surface. A tap immediately maps a bright
+icon/name mask, animates the real catalog icon from its Home origin when motion
+is enabled, registers an exact-ID window observation, and then starts Core
+asynchronously. Only the matching component's `surface-ready` event ends the
+mask; failed observation, Core rejection, or the independent eight-second
+deadline hides it and posts a bounded notification. The surface is an X11
+policy layer above applications and below Chrome/Navigation; it does not
+capture pixels, reopen applications, or alter display dirty tracking.
 
 Version 0.6.17 gives the LVGL Home screen bounded, touch-following horizontal
 page gestures and separates insert, folder-group, and edge-dwell drop intents.
@@ -228,12 +238,14 @@ one coalesced request. Closing a card follows the same path, clamps the scroll
 offset after reflow, and clears the union of old/new card pixels inside the
 task viewport rather than damaging the system bars.
 
-Launching an app maps one compact internal `animation-mask` surface before the
+The Xlib fallback maps one compact internal `animation-mask` surface before the
 asynchronous Core call. It reuses the launcher's cached icon and localized app
 name, renders at most four 90ms pulse frames, then remains static until Core
-reports ready/failure or the bounded request expires. It is not a replaceable
-`transition-presenter` role provider. `MSYS_NATIVE_REDUCED_MOTION=1` collapses
-finite shell animations to their first frame. Overview content follows drag
+reports ready/failure or the bounded request expires. That fallback mask is not
+a replaceable `transition-presenter`; the default LVGL provider implements the
+typed role and exact window observation described above.
+`MSYS_NATIVE_REDUCED_MOTION=1` collapses finite shell animations to their first
+frame. Overview content follows drag
 motion through atomic, rate-limited viewport frames. Launcher page swipes keep
 the current cached page stable during motion and atomically commit one adjacent
 page on release; edit-mode hover changes only the old/new cells. A clamped drag

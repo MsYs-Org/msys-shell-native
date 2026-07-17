@@ -215,12 +215,33 @@ static int test_layout(void)
     return 0;
 }
 
+static int test_launch_transition(void)
+{
+    CHECK(msys_native_launch_transition_matches(
+        "lvgl-1", "org.example:main", "lvgl-1", "org.example:main",
+        "launch"));
+    CHECK(!msys_native_launch_transition_matches(
+        "lvgl-1", "org.example:main", "lvgl-2", "org.example:main",
+        "launch"));
+    CHECK(!msys_native_launch_transition_matches(
+        "lvgl-1", "org.example:main", "lvgl-1", "org.other:main",
+        "launch"));
+    CHECK(!msys_native_launch_transition_matches(
+        "lvgl-1", "org.example:main", "lvgl-1", "org.example:main",
+        "close"));
+    CHECK(!msys_native_transition_expired(8000u, 7999u));
+    CHECK(msys_native_transition_expired(8000u, 8000u));
+    CHECK(!msys_native_transition_expired(0u, 9000u));
+    return 0;
+}
+
 int main(void)
 {
     CHECK(test_gesture() == 0);
     CHECK(test_methods() == 0);
     CHECK(test_layout() == 0);
     CHECK(test_adaptive_ui() == 0);
+    CHECK(test_launch_transition() == 0);
     puts("native shell model tests passed");
     return 0;
 }

@@ -313,6 +313,16 @@ void msys_native_layout_compute(
     int height
 );
 
+int msys_native_launch_transition_matches(
+    const char *active_id,
+    const char *active_component,
+    const char *event_id,
+    const char *event_component,
+    const char *event_action
+);
+
+int msys_native_transition_expired(uint64_t deadline_ms, uint64_t now_ms);
+
 #ifdef __cplusplus
 }
 #endif

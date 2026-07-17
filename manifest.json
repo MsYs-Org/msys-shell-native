@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.shell.native",
     "name": "MSYS Native Shell",
-    "version": "0.6.17",
+    "version": "0.6.18",
     "kind": "system",
     "vendor": "MSYS",
     "summary": "Lean LVGL/XML shell with an Xlib compatibility fallback",
@@ -217,6 +217,17 @@
             "x11_wm_class": "org.msys.shell.native.notifications",
             "x11_wm_instance": "msys-shell-lvgl"
           }
+        },
+        "transition-presenter": {
+          "system": "x11",
+          "display": "inherit",
+          "mode": "overlay",
+          "title": "MSYS Launch Transition",
+          "identity": {
+            "app_id": "org.msys.shell.transitions",
+            "x11_wm_class": "org.msys.shell.transitions",
+            "x11_wm_instance": "msys-shell-lvgl"
+          }
         }
       },
       "permissions": [
@@ -231,6 +242,7 @@
         "mipc.event:subscribe:msys.hal.changed",
         "mipc.event:subscribe:msys.role.notification-presenter",
         "mipc.event:subscribe:msys.notification.post",
+        "mipc.event:subscribe:msys.window.transition",
         "mipc.event:publish:msys.shell.preferences.changed",
         "mipc.event:publish:msys.role.ready"
       ],
@@ -257,7 +269,8 @@
         },
         {"role": "task-switcher", "exclusive": true, "priority": 100},
         {"role": "notification-presenter", "exclusive": true, "priority": 100},
-        {"role": "notification-center", "exclusive": true, "priority": 100}
+        {"role": "notification-center", "exclusive": true, "priority": 100},
+        {"role": "transition-presenter", "exclusive": true, "priority": 100}
       ],
       "x-msys-ui-provider": {
         "id": "lvgl",

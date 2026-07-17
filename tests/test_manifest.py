@@ -17,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.17")
+        self.assertEqual(self.document["package"]["version"], "0.6.18")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.17"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.18"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "manual")
@@ -56,12 +56,14 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertEqual(
             set(component["x-msys-role-windows"]),
             {"launcher", "system-chrome", "navigation-bar", "task-switcher",
-             "notification-presenter", "notification-center"},
+             "notification-presenter", "notification-center",
+             "transition-presenter"},
         )
         self.assertEqual(
             {item["role"] for item in component["provides"]},
             {"launcher", "system-chrome", "navigation-bar", "task-switcher",
-             "notification-presenter", "notification-center"},
+             "notification-presenter", "notification-center",
+             "transition-presenter"},
         )
         self.assertTrue(all(item["priority"] == 100 for item in component["provides"]))
         self.assertTrue(component["x-msys-ui-provider"]["default"])
@@ -84,11 +86,40 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertEqual(
             {path.name for path in ui_dir.glob("*.xml")},
             {"launcher.xml", "chrome.xml", "navigation.xml", "overview.xml",
-             "notification.xml", "controls.xml", "toast.xml"},
+             "notification.xml", "controls.xml", "toast.xml",
+             "transition.xml"},
         )
         self.assertIn("msys_native_notification_append", source)
         self.assertIn("msys_native_parse_wifi_state", source)
         self.assertIn("msys_native_gesture_motion", source)
+        self.assertIn('"begin_launch_transition"', source)
+        self.assertIn('"msys.window.transition"', source)
+        self.assertIn("msys_native_launch_transition_matches", source)
+        self.assertIn("LAUNCH_TRANSITION_TIMEOUT_MS 8000u", source)
+        self.assertIn('"transition-presenter"', source)
+        self.assertNotIn("opening_delete_cb", source)
+        self.assertNotIn("750u", source)
+        start = source[
+            source.index("static void start_app_at"):
+            source.index("static void start_app(shell_state")
+        ]
+        self.assertLess(start.index("show_launch_transition"),
+                        start.index('"begin_launch_transition"'))
+        self.assertLess(start.index('"begin_launch_transition"'),
+                        start.index('"msys.core", "start"'))
+        self.assertIn("transition_origin_y + BAR_HEIGHT", start)
+        transition_window = component["x-msys-role-windows"][
+            "transition-presenter"
+        ]
+        self.assertEqual(transition_window["mode"], "overlay")
+        self.assertEqual(
+            transition_window["identity"]["app_id"],
+            "org.msys.shell.transitions",
+        )
+        self.assertIn(
+            "mipc.event:subscribe:msys.window.transition",
+            component["permissions"],
+        )
 
     def test_lvgl_launcher_async_grid_keeps_nonzero_flex_geometry(self) -> None:
         launcher_path = ROOT / "files" / "share" / "ui" / "shell" / "launcher.xml"
