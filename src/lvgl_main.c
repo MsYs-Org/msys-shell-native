@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.12"
+#define APP_VERSION "0.6.13"
 #define SURFACE_COUNT 7u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -1664,6 +1664,11 @@ static void configure_interactions(shell_state *shell)
         if(lv_obj_get_parent(pill) != navigation_root)
             lv_obj_set_parent(pill, navigation_root);
         lv_obj_add_flag(pill, LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_size(pill, 94, 7);
+        lv_obj_set_style_radius(pill, 4, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(pill, lv_color_hex(0x273247), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(pill, 0, LV_PART_MAIN);
         lv_obj_center(pill);
         lv_obj_set_flag(pill, LV_OBJ_FLAG_HIDDEN, shell->buttons_mode != 0);
         lv_obj_update_layout(navigation_root);
@@ -2161,8 +2166,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.12\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.12\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.13\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.13\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -2380,7 +2385,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.12\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.13\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","

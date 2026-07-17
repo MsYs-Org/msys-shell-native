@@ -17,9 +17,9 @@ class NativeShellManifestTests(unittest.TestCase):
         cls.lvgl_component = cls.document["components"][1]
 
     def test_default_native_component_owns_only_implemented_phase_two_roles(self) -> None:
-        self.assertEqual(self.document["package"]["version"], "0.6.12")
+        self.assertEqual(self.document["package"]["version"], "0.6.13")
         implementation = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
-        self.assertIn('#define APP_VERSION "0.6.12"', implementation)
+        self.assertIn('#define APP_VERSION "0.6.13"', implementation)
         self.assertEqual(len(self.document["components"]), 2)
         self.assertEqual(self.component["runtime"], "native")
         self.assertEqual(self.component["lifecycle"], "manual")
@@ -143,6 +143,7 @@ class NativeShellManifestTests(unittest.TestCase):
         self.assertIn("lv_obj_set_parent(pill_area, navigation_root)", source)
         self.assertIn("lv_obj_set_parent(pill, navigation_root)", source)
         self.assertIn("lv_obj_add_flag(pill, LV_OBJ_FLAG_FLOATING)", source)
+        self.assertIn("lv_obj_set_style_bg_opa(pill, LV_OPA_COVER", source)
         self.assertIn("lv_obj_set_flex_grow(grid, 0)", source)
         self.assertIn("launcher geometry apps=%zu", source)
         self.assertIn('"--probe-launcher"', source)
