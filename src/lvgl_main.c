@@ -26,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_VERSION "0.6.15"
+#define APP_VERSION "0.6.16"
 #define SURFACE_COUNT 7u
 #define BAR_HEIGHT 42
 #define ROOT_WIDTH 320
@@ -1645,9 +1645,19 @@ static void configure_interactions(shell_state *shell)
     lv_obj_t *pill_area;
     lv_obj_t *pill;
     lv_obj_t *navigation_root;
+    lv_obj_t *page_previous;
+    lv_obj_t *page_next;
     size_t index;
     for(index = 0u; index < sizeof(feedback) / sizeof(feedback[0]); index++)
         add_feedback(shell, feedback[index].surface, feedback[index].name);
+    page_previous = view_object(&shell->views[SURFACE_LAUNCHER], "page_previous");
+    page_next = view_object(&shell->views[SURFACE_LAUNCHER], "page_next");
+    if(page_previous != NULL)
+        lv_obj_add_event_cb(page_previous, xml_action_cb, LV_EVENT_CLICKED,
+                            "launcher-previous");
+    if(page_next != NULL)
+        lv_obj_add_event_cb(page_next, xml_action_cb, LV_EVENT_CLICKED,
+                            "launcher-next");
     buttons = view_object(&shell->views[SURFACE_NAVIGATION], "button_navigation");
     pill_area = view_object(&shell->views[SURFACE_NAVIGATION], "pill_navigation");
     pill = view_object(&shell->views[SURFACE_NAVIGATION], "navigation_pill");
@@ -2169,8 +2179,8 @@ static void handle_call(shell_state *shell, const char *packet)
         (void)msys_mipc_send_return_json(
             &shell->ipc, id,
             shell->overview_visible != 0
-                ? "{\"version\":\"0.6.15\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
-                : "{\"version\":\"0.6.15\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
+                ? "{\"version\":\"0.6.16\",\"renderer\":\"lvgl-xml\",\"overview\":true}"
+                : "{\"version\":\"0.6.16\",\"renderer\":\"lvgl-xml\",\"overview\":false}");
     }
     else
         (void)msys_mipc_send_error(&shell->ipc, id, "NO_METHOD", method);
@@ -2388,7 +2398,7 @@ int main(int argc, char **argv)
         return 1;
     for(index = 1; index < argc; index++) {
         if(strcmp(argv[index], "--describe") == 0) {
-            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.15\","
+            puts("{\"frontend\":\"lvgl-xml\",\"version\":\"0.6.16\","
                  "\"surfaces\":[\"launcher\",\"system-chrome\","
                  "\"navigation-bar\",\"task-switcher\","
                  "\"notification-center\",\"quick-controls\","
